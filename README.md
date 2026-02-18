@@ -1,4 +1,4 @@
-# 🛠️ eng-buddy - Engineering Buddy for IT Systems Engineers
+# 🛠️ eng-buddy — your on-call EA, built for engineers
 
 Your intelligent assistant for staying organized, focused, and effective amid constant context switching and complex technical challenges.
 
