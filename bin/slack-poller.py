@@ -10,6 +10,7 @@ import os
 import re
 import sys
 import time
+import subprocess
 from datetime import datetime, date, timedelta
 from pathlib import Path
 import urllib.request
@@ -44,6 +45,19 @@ TASK_SIGNAL_PATTERNS = [
     r"waiting (on|for) (you|IT|this)",
     r"follow.?up",
 ]
+
+
+def notify(title, message):
+    """
+    Fire two notifications:
+    1. Banner to notification center (with sound)
+    2. Persistent alert dialog (stays until dismissed)
+    """
+    banner_script = f'display notification "{message}" with title "{title}" sound name "Glass"'
+    subprocess.run(["osascript", "-e", banner_script])
+
+    alert_script = f'display alert "{title}" message "{message}" buttons {{"OK"}} default button "OK"'
+    subprocess.Popen(["osascript", "-e", alert_script])
 
 
 def slack_get(method, params=None, retry=5):
@@ -257,6 +271,10 @@ def main():
                 f.write(f"## [ ] {msg['sender']} via {msg['channel']} — {dt}\n")
                 f.write(f"{msg['text']}\n")
                 f.write(f"<!-- ts:{ts_str} -->\n\n")
+                notify(
+                    title=f"eng-buddy: Task signal from {msg['sender']}",
+                    message=f"{msg['channel']}\n{msg['text'][:80]}",
+                )
         print(f"[{datetime.now().strftime('%H:%M')}] Detected {len(tasks_detected)} potential task(s) → task-inbox.md")
 
     # Write to daily log
