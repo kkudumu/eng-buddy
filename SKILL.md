@@ -146,6 +146,12 @@ ELSE IF WORKSPACE_STATE == "existing":
 4. Identify tasks that can be delegated or deprioritized
 5. Recommend time management strategies
 
+**When user asks how to do something in a system UI (Jira, Productboard, Freshservice, Okta, etc.):**
+1. **ALWAYS search the web first** using WebSearch before answering
+2. Use the actual vendor documentation steps — never guess from memory
+3. Return the specific navigation path and steps from the search results
+4. Cite the source URL so the user can verify
+
 **When discussing technical decisions:**
 1. Ask clarifying questions about requirements and constraints
 2. Consider multiple approaches and trade-offs
@@ -185,6 +191,26 @@ ELSE IF WORKSPACE_STATE == "existing":
 "You worked 9+ hours today. That's a lot. Tomorrow's plan is more manageable."
 
 The user wants you to KNOW them, not REMIND them of things they already know about themselves.
+
+### Communication Drafts Protocol
+
+**ALWAYS follow this when writing any comms draft (Slack message, email, status update, escalation):**
+
+⛔ **Write the file FIRST — before showing any draft content in chat. The file must exist before you output the draft.**
+
+1. Determine filename: `[recipient]-[topic]-[YYYY-MM-DD].md`
+2. Write the file to `~/.claude/eng-buddy/drafts/` using the Write tool — this happens BEFORE anything else
+3. Include metadata at top: Date, Channel, To
+4. Return the full file path in chat, then show the draft content
+5. Treat it as a living document — update in place if the user wants revisions, don't create new files
+
+Example path returned in chat:
+`/Users/kioja.kudumu/.claude/eng-buddy/drafts/nik-structure-licensing-2026-02-19.md`
+
+**Wrong order**: Draft in chat → maybe save later
+**Right order**: Write file → return path → show content
+
+---
 
 ### Output Formats
 
@@ -1435,3 +1461,284 @@ When this conversation ends or user types `/clear`:
 - This deactivates the auto-logging hook
 - No manual action required - happens automatically
 - Hook will not fire in other conversations outside eng-buddy
+
+---
+
+## 📦 Installation Guide
+
+eng-buddy has three optional layers on top of the base skill. Install as many or as few as you need.
+
+```
+Tier 0 — Base skill only          (just /eng-buddy, no automation)
+Tier 1 — + Hooks                  (auto-log prompts, session awareness)
+Tier 2 — + Slack Poller           (passive DM/mention ingestion)
+Tier 3 — Full package             (everything: base + hooks + poller)
+```
+
+---
+
+### Tier 0 — Base Skill Only
+
+No setup needed beyond having Claude Code. Just invoke `/eng-buddy`.
+
+You'll get: workspace creation, task tracking, daily logs, meeting analysis, context switching support.
+
+You won't get: automatic progress logging prompts, Slack message ingestion, task inbox.
+
+---
+
+### Tier 1 — Base + Hooks
+
+Three hook scripts ship with eng-buddy:
+
+| Script | Trigger | What it does |
+|--------|---------|--------------|
+| `eng-buddy-session-manager.sh` | Called by SKILL.md STEP 0 | Activates/deactivates the session marker. `start` creates `~/.claude/eng-buddy/.session-active`, `stop` removes it. Gates all other hooks. |
+| `eng-buddy-auto-log.sh` | `UserPromptSubmit` (every message) | Detects when you report completing something ("I finished…", "just sent…", "done") and reminds Claude to log it to today's daily file. Also checks `task-inbox.md` and surfaces any unreviewed Slack tasks to Claude. Only fires during active eng-buddy sessions. |
+| `eng-buddy-session-end.sh` | `SessionEnd` (conversation ends) | Removes the session marker automatically so hooks don't fire in other conversations. |
+
+**Install:**
+
+```bash
+# 1. Find your CLAUDE_HOME
+echo $CLAUDE_HOME  # or default: ~/.claude
+
+# 2. Copy all three hook scripts
+HOOKS_DIR="${CLAUDE_HOME:-$HOME/.claude}/hooks"
+mkdir -p "$HOOKS_DIR"
+cp ~/.claude/skills/eng-buddy/hooks/eng-buddy-auto-log.sh "$HOOKS_DIR/"
+cp ~/.claude/skills/eng-buddy/hooks/eng-buddy-session-end.sh "$HOOKS_DIR/"
+cp ~/.claude/skills/eng-buddy/hooks/eng-buddy-session-manager.sh "$HOOKS_DIR/"
+chmod +x "$HOOKS_DIR"/eng-buddy-*.sh
+
+# 3. Wire UserPromptSubmit and SessionEnd in settings.json
+# Location: $CLAUDE_HOME/settings.json or ~/.claude/settings.json
+```
+
+Add to `settings.json` (replace path with your actual `$HOOKS_DIR`):
+
+```json
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/YOUR/HOOKS/DIR/eng-buddy-auto-log.sh"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/YOUR/HOOKS/DIR/eng-buddy-session-end.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+```bash
+# 4. Update SKILL.md STEP 0 to point at your session manager
+# Open this SKILL.md and find the line:
+#   "Use Bash: ~/.claude-backup.../hooks/eng-buddy-session-manager.sh start"
+# Replace the path with: $HOOKS_DIR/eng-buddy-session-manager.sh start
+
+# 5. Verify all three are in place and executable
+ls -la "$HOOKS_DIR"/eng-buddy-*.sh
+"$HOOKS_DIR"/eng-buddy-session-manager.sh status
+# Expected: ⏸️  eng-buddy auto-logging is INACTIVE
+```
+
+---
+
+### Tier 2a — Base + Slack Poller
+
+The Slack poller runs in the background every 10 minutes, pulls your DMs, private channel messages, and @mentions, detects task-signal messages, and writes them to `~/.claude/eng-buddy/task-inbox.md`.
+
+**Prerequisites:**
+- A Slack app with a user token (`xoxp-...`)
+- Required user token scopes: `im:read`, `mpim:read`, `groups:read`, `channels:history`, `groups:history`, `im:history`, `mpim:history`, `search:read.public`, `search:read.private`, `users:read`
+
+**Get your token:**
+1. Go to `api.slack.com/apps` → create or select an app
+2. **OAuth & Permissions** → add the scopes above under User Token Scopes
+3. **Install App to Workspace** → copy the User OAuth Token (`xoxp-...`)
+
+**Install:**
+
+```bash
+# 1. Copy the poller script
+mkdir -p ~/.claude/eng-buddy/bin
+cp ~/.claude/skills/eng-buddy/bin/slack-poller.py ~/.claude/eng-buddy/bin/
+chmod +x ~/.claude/eng-buddy/bin/slack-poller.py
+
+# 2. Set your token in the script
+sed -i '' 's|YOUR_SLACK_USER_TOKEN|xoxp-YOUR-ACTUAL-TOKEN|g' \
+  ~/.claude/eng-buddy/bin/slack-poller.py
+
+# 3. Copy the launchd plist and set your token
+cp ~/.claude/skills/eng-buddy/bin/com.engbuddy.slackpoller.plist \
+   ~/Library/LaunchAgents/com.engbuddy.slackpoller.plist
+
+sed -i '' 's|YOUR_SLACK_USER_TOKEN|xoxp-YOUR-ACTUAL-TOKEN|g' \
+  ~/Library/LaunchAgents/com.engbuddy.slackpoller.plist
+
+# Replace python path if needed (check yours with: which python3)
+sed -i '' 's|/opt/homebrew/bin/python3|'$(which python3)'|g' \
+  ~/Library/LaunchAgents/com.engbuddy.slackpoller.plist
+
+# 4. Load the daemon
+launchctl load ~/Library/LaunchAgents/com.engbuddy.slackpoller.plist
+
+# 5. Test it
+python3 ~/.claude/eng-buddy/bin/slack-poller.py
+# Expected: [HH:MM] No new messages  (or a list of messages)
+```
+
+**Logs:** `~/.claude/eng-buddy/slack-poller.log`
+
+**Note:** The poller only surfaces tasks to eng-buddy if Tier 1 hooks are also installed. Without hooks, task-inbox.md is still written — you can read it manually.
+
+---
+
+### Tier 2b — Base + Gmail Poller
+
+The Gmail poller runs in the background every 10 minutes, checks your inbox for emails matching watches you configure in `email-watches.md`, and writes matches to `task-inbox.md` with a link to the relevant task.
+
+**On match, the poller fires two macOS notifications:**
+1. A banner notification (appears in notification center, plays Glass sound, auto-dismisses)
+2. A persistent alert dialog (stays on screen until you click OK — so you can't miss it)
+
+No need to have eng-buddy open. The notifications fire in the background via `osascript`. macOS only.
+
+Two watch modes:
+- **Proactive watch**: Tell eng-buddy "watch for email from X about Y" — it writes a watch entry
+- **Thread-based watch**: Paste an email into eng-buddy — it extracts the thread ID for exact matching
+
+**Prerequisites:**
+- Gmail OAuth credentials at `~/.gmail-mcp/credentials.json` (access + refresh token) and `~/.gmail-mcp/gcp-oauth.keys.json` (OAuth app credentials)
+- If you use the Gmail MCP server, these are already there
+
+**Install:**
+
+```bash
+# 1. Copy the poller script and email-watches template
+mkdir -p ~/.claude/eng-buddy/bin
+cp ~/.claude/skills/eng-buddy/bin/gmail-poller.py ~/.claude/eng-buddy/bin/
+chmod +x ~/.claude/eng-buddy/bin/gmail-poller.py
+
+# 2. Create your email-watches.md (copy template, edit as needed)
+cp ~/.claude/skills/eng-buddy/email-watches.md.template \
+   ~/.claude/eng-buddy/email-watches.md
+
+# 3. Copy the launchd plist
+cp ~/.claude/skills/eng-buddy/bin/com.engbuddy.gmailpoller.plist \
+   ~/Library/LaunchAgents/com.engbuddy.gmailpoller.plist
+
+# Replace python path if needed
+sed -i '' 's|/opt/homebrew/bin/python3|'$(which python3)'|g' \
+  ~/Library/LaunchAgents/com.engbuddy.gmailpoller.plist
+
+# 4. Test it
+python3 ~/.claude/eng-buddy/bin/gmail-poller.py
+# Expected: [HH:MM] No watched emails  (or matched emails if any)
+
+# 5. Load the daemon
+launchctl load ~/Library/LaunchAgents/com.engbuddy.gmailpoller.plist
+```
+
+**Logs:** `~/.claude/eng-buddy/gmail-poller.log`
+
+**Adding watches** — tell eng-buddy:
+- "watch for email from *@vendor.com about SSO, SCIM" → appends to email-watches.md
+- Watches support: `From:` wildcard patterns (comma-separated OR), `Subject contains:` keywords (OR), `Thread ID:` for exact thread matching, `Snoozed until: YYYY-MM-DD` to pause
+
+**Note:** Both Slack and Gmail pollers write to the same `task-inbox.md`. Tier 1 hooks surface all pending items automatically when you open eng-buddy.
+
+---
+
+### Tier 3 — Full Package
+
+Everything: base skill + hooks + Slack poller + Gmail poller. Do Tier 1 first, then Tiers 2a and 2b.
+
+```bash
+# Quick install script — fill in your values first
+
+CLAUDE_HOME="${CLAUDE_HOME:-$HOME/.claude}"
+HOOKS_DIR="$CLAUDE_HOME/hooks"
+SLACK_TOKEN="xoxp-YOUR-ACTUAL-TOKEN"
+PYTHON=$(which python3)
+
+# Hooks
+mkdir -p "$HOOKS_DIR"
+cp "$CLAUDE_HOME/skills/eng-buddy/hooks/"*.sh "$HOOKS_DIR/"
+chmod +x "$HOOKS_DIR"/eng-buddy-*.sh
+
+# Pollers
+mkdir -p ~/.claude/eng-buddy/bin
+
+# Slack poller
+cp "$CLAUDE_HOME/skills/eng-buddy/bin/slack-poller.py" ~/.claude/eng-buddy/bin/
+sed -i '' "s|YOUR_SLACK_USER_TOKEN|$SLACK_TOKEN|g" ~/.claude/eng-buddy/bin/slack-poller.py
+chmod +x ~/.claude/eng-buddy/bin/slack-poller.py
+
+cp "$CLAUDE_HOME/skills/eng-buddy/bin/com.engbuddy.slackpoller.plist" \
+   ~/Library/LaunchAgents/com.engbuddy.slackpoller.plist
+sed -i '' "s|YOUR_SLACK_USER_TOKEN|$SLACK_TOKEN|g" \
+  ~/Library/LaunchAgents/com.engbuddy.slackpoller.plist
+sed -i '' "s|/opt/homebrew/bin/python3|$PYTHON|g" \
+  ~/Library/LaunchAgents/com.engbuddy.slackpoller.plist
+launchctl load ~/Library/LaunchAgents/com.engbuddy.slackpoller.plist
+
+# Gmail poller (requires ~/.gmail-mcp/credentials.json + gcp-oauth.keys.json)
+cp "$CLAUDE_HOME/skills/eng-buddy/bin/gmail-poller.py" ~/.claude/eng-buddy/bin/
+chmod +x ~/.claude/eng-buddy/bin/gmail-poller.py
+cp "$CLAUDE_HOME/skills/eng-buddy/email-watches.md.template" \
+   ~/.claude/eng-buddy/email-watches.md
+
+cp "$CLAUDE_HOME/skills/eng-buddy/bin/com.engbuddy.gmailpoller.plist" \
+   ~/Library/LaunchAgents/com.engbuddy.gmailpoller.plist
+sed -i '' "s|/opt/homebrew/bin/python3|$PYTHON|g" \
+  ~/Library/LaunchAgents/com.engbuddy.gmailpoller.plist
+launchctl load ~/Library/LaunchAgents/com.engbuddy.gmailpoller.plist
+
+echo "Done. Add hooks to settings.json manually (see Tier 1 instructions)."
+echo "Then update SKILL.md STEP 0 path to: $HOOKS_DIR/eng-buddy-session-manager.sh"
+echo "Edit ~/.claude/eng-buddy/email-watches.md to add your email watches."
+```
+
+**After running:** add the hooks config to `settings.json` (see Tier 1), update the STEP 0 path in SKILL.md, then invoke `/eng-buddy`.
+
+---
+
+### How the Layers Work Together
+
+```
+Slack workspace          Gmail inbox
+      ↓ (every 10 min)         ↓ (every 10 min)
+slack-poller.py          gmail-poller.py     ← Tier 2a/2b: passive ingestion
+      ↓                        ↓
+      └──────┬──────────────────┘
+             ↓
+        task-inbox.md           ← Slack task signals + email watch matches
+             ↓
+  eng-buddy-auto-log.sh         ← Tier 1: hook fires on every user message
+             ↓ (if inbox has items)
+    eng-buddy session           ← Tier 0: surfaces tasks, lets you review + create
+             ↓
+  tasks/active-tasks.md         ← persists across sessions
+```
+
+**Task signal detection** — messages matching these patterns auto-route to task-inbox:
+- Problem reports: "isn't working", "not working", "having a problem", "getting an error"
+- Access issues: "can't access", "locked out", "no access", "lost access"
+- Requests: "can you", "need help", "please fix", "could you check"
+- Ticket references: freshservice.com URLs, ITWORK-XXXX Jira keys
+- Unresolved complaints: "wasn't fulfilled", "was never completed", "still waiting"
