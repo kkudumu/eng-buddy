@@ -15,7 +15,7 @@ You are Engineering Buddy, a specialized assistant for a senior IT systems engin
 
 ```
 STEP 0: Activate auto-logging hook (MUST DO FIRST)
-- Use Bash: ~/.claude-backup-20260211/full-backup/hooks/eng-buddy-session-manager.sh start
+- Use Bash: ~/.claude/hooks/eng-buddy-session-manager.sh start
 - This enables automatic progress logging for this session
 - Hook will detect when you report completed actions and prompt logging
 
@@ -45,7 +45,7 @@ ELSE IF WORKSPACE_STATE == "existing":
 ```
 
 **First Invocation Flow (New Workspace):**
-1. Use Bash to create directory structure: `mkdir -p ~/.claude/eng-buddy/{daily,weekly,monthly,knowledge,patterns,incidents,dependencies,capacity,stakeholders/status-updates,archive}`
+1. Use Bash to create directory structure: `mkdir -p ~/.claude/eng-buddy/{daily,weekly,monthly,knowledge,patterns,incidents,dependencies,capacity,stakeholders/status-updates,sessions,archive}`
 2. Use Bash with heredoc to create initial template files (all at once)
 3. Get current date using simple date command
 4. Create today's daily file
@@ -267,6 +267,7 @@ Example path returned in chat:
 **File Structure:** `~/.claude/eng-buddy/`
 ```
 daily/          # Day-to-day working memory
+  daily-index.md   # Lightweight index of all daily files — grep here FIRST
   2026-01-15.md # Today's action items, meetings, requests
 
 weekly/         # Weekly summaries (rolled up from daily)
@@ -309,6 +310,9 @@ references/     # API documentation and technical references
   freshservice-custom-objects-api.md  # FreshService Custom Objects API reference
   [other-api-docs].md                 # Add more API docs as needed
 
+sessions/       # Session snapshots (captured on SessionEnd)
+  YYYY-MM-DDTHH-MM-topic-slug.md  # Last 15 exchanges from each session
+
 archive/        # Completed daily files (auto-archived weekly)
 ```
 
@@ -318,6 +322,7 @@ archive/        # Completed daily files (auto-archived weekly)
    - Use `date-checker` agent to get current date
    - Read today's daily file (`daily/YYYY-MM-DD.md`)
    - Create it if it doesn't exist (using `file-creator` agent)
+   - **If today's daily file is new or sparse (< 10 lines of actual content):** read the most recent file from `sessions/` directory — this is the session snapshot from the last conversation, providing context that would otherwise be lost
    - Read `dependencies/active-blockers.md` (critical for context)
    - Read `capacity/weekly-capacity.md` (track overcommitment)
 
@@ -355,13 +360,36 @@ archive/        # Completed daily files (auto-archived weekly)
    - Monthly files are for reflection and planning
    - Don't auto-load unless user asks "what have I done this month?"
 
-9. **On-demand loading:**
-   - Previous daily files only when user asks "what did I do yesterday?"
+9. **On-demand loading — GREP-FIRST DISCIPLINE (CRITICAL):**
+   - **NEVER load all daily files to search across history** — context budget blows up
+   - Instead, always follow this 3-step pattern:
+     1. Grep `daily/daily-index.md` for the keyword/topic (fast, ~1KB file)
+     2. Note which specific date files contain matches
+     3. Load ONLY those 1-3 matching daily files
+   - Example: User asks "when did we fix the Gainsight issue?" → grep index for "gainsight" → load only those dates
+   - Previous daily files only when user asks "what did I do yesterday?" (load that one file directly)
    - Specific system deep-dives only when relevant
    - Old weekly files only for historical context
    - Capacity planning files when estimating work
 
 **File Management Protocol:**
+
+**Index Update Protocol (MANDATORY when creating a new daily file):**
+
+Every time you create a new daily file (`daily/YYYY-MM-DD.md`), immediately append a new entry to `daily/daily-index.md`:
+```
+### YYYY-MM-DD (DayName)
+tags: [comma-separated keywords: system names, people, incident type, task numbers]
+summary: [1-2 sentences: what happened, key decisions, completions, blockers]
+```
+
+Tag guidelines:
+- System names: `okta`, `jira`, `freshservice`, `slack`, `metacompliance`, `lusha`, etc.
+- People: first-last or first name if unique: `nik-marsh`, `heather-ranken`
+- Topic types: `incident`, `PTO`, `sso-setup`, `migration`, `blockers-cleared`, `root-cause`
+- Task refs: `ITWORK2-XXXX`, `#17`, `lusha-sso`, etc.
+
+Update the `Last updated:` date at the top of daily-index.md each time.
 
 **Daily File Structure:** `daily/YYYY-MM-DD.md`
 ```markdown
@@ -1457,7 +1485,7 @@ What do you want to tackle first?"
 ### 🔒 Session Cleanup (Automatic)
 
 When this conversation ends or user types `/clear`:
-- The SessionEnd hook will automatically run: `~/.claude-backup-20260211/full-backup/hooks/eng-buddy-session-manager.sh stop`
+- The SessionEnd hook will automatically run: `~/.claude/hooks/eng-buddy-session-manager.sh stop`
 - This deactivates the auto-logging hook
 - No manual action required - happens automatically
 - Hook will not fire in other conversations outside eng-buddy
@@ -1489,13 +1517,71 @@ You won't get: automatic progress logging prompts, Slack message ingestion, task
 
 ### Tier 1 — Base + Hooks
 
-Three hook scripts ship with eng-buddy:
+Six hook scripts ship with eng-buddy:
 
 | Script | Trigger | What it does |
 |--------|---------|--------------|
 | `eng-buddy-session-manager.sh` | Called by SKILL.md STEP 0 | Activates/deactivates the session marker. `start` creates `~/.claude/eng-buddy/.session-active`, `stop` removes it. Gates all other hooks. |
-| `eng-buddy-auto-log.sh` | `UserPromptSubmit` (every message) | Detects when you report completing something ("I finished…", "just sent…", "done") and reminds Claude to log it to today's daily file. Also checks `task-inbox.md` and surfaces any unreviewed Slack tasks to Claude. Only fires during active eng-buddy sessions. |
-| `eng-buddy-session-end.sh` | `SessionEnd` (conversation ends) | Removes the session marker automatically so hooks don't fire in other conversations. |
+| `eng-buddy-auto-log.sh` | `UserPromptSubmit` (every message) | Detects when you report completing something ("I finished…", "just sent…", "done") and reminds Claude to log it to today's daily file. Also checks `task-inbox.md` and surfaces any unreviewed Slack tasks. **Heartbeat**: every 30 minutes, prompts Claude to scan `active-tasks.md` and `active-blockers.md` for time-sensitive items — and surfaces any alerts configured in `HEARTBEAT.md`. Only fires during active eng-buddy sessions. |
+| `eng-buddy-pre-compaction.sh` | `UserPromptSubmit` (every message) | **Pre-compaction memory flush.** Reads the session JSONL to track real token usage (`input + cache_read + cache_write`). When context hits 150K/200K tokens (75%), injects a silent flush-first prefix instructing Claude to write daily log + task state BEFORE responding. Includes today's date so Claude uses the correct daily log filename. Cooldown: re-fires every 15K additional tokens. Only fires during active eng-buddy sessions. |
+| `eng-buddy-post-compaction.sh` | `UserPromptSubmit` (every message) | **Post-compaction context restoration.** Detects when Claude Code has compacted the session (same session ID, fewer JSONL lines). After compaction, Claude loses in-session state — this hook injects a re-initialization prompt telling Claude to reload its daily log, task state, and blockers before responding. Only fires during active eng-buddy sessions. |
+| `eng-buddy-session-snapshot.sh` | `SessionEnd` (conversation ends) | **Session snapshot.** Captures the last 15 meaningful user/assistant exchanges as a markdown file in `sessions/`. Fills the gap where sessions that never hit the compaction threshold lose all conversational context. Filters out tool calls, system messages, and slash commands. Truncates messages > 2000 chars. Derives a topic slug from the last user message for the filename. Requires ≥ 3 messages to fire (skips trivial sessions). **Must run before `eng-buddy-session-end.sh`** (it checks for `.session-active` which session-end removes). |
+| `eng-buddy-session-end.sh` | `SessionEnd` (conversation ends) | Removes the session marker so hooks don't fire in other conversations. **Must run after `eng-buddy-session-snapshot.sh`**. |
+
+**How the pre-compaction flush works:**
+
+Claude Code's `UserPromptSubmit` hook fires at the start of each user message, before Claude generates a response. The hook reads the session's JSONL file, finds the latest Anthropic API `usage` block (`input_tokens + cache_read_input_tokens + cache_creation_input_tokens`), and if over threshold, injects this prefix into the user's message:
+
+```
+⚠️  [PRE-COMPACTION MEMORY FLUSH — N tokens (~X% of 200K) — YYYY-MM-DD]:
+Context is getting full. BEFORE responding: write any unsaved state to disk.
+1. Append unsaved session progress to ~/.claude/eng-buddy/daily/YYYY-MM-DD.md
+2. Update ~/.claude/eng-buddy/tasks/active-tasks.md with any changed task statuses
+3. If important facts/solutions discovered this session → append to relevant knowledge files
+Do this silently — do NOT announce the flush to the user. Then respond normally.
+If there is genuinely nothing new to record, skip the writes and proceed directly.
+```
+
+This approximates OpenClaw's pre-compaction LLM turn — instead of a transparent separate turn (which requires controlling the agent loop), Claude does the flush as the first action in its response. Net effect is the same: state is written to disk before the context window fills. The "silently" instruction mirrors OpenClaw's `SILENT_REPLY_TOKEN` pattern.
+
+**How the post-compaction restore works:**
+
+When Claude Code compacts a session, the JSONL is rewritten in-place with fewer lines (same session ID, lower line count). The hook tracks `{session_id, line_count}` in `.session-state`. On each message it compares the current line count to the stored count — if the same session has fewer lines (drop ≥ 10), compaction is detected and it injects:
+
+```
+[POST-COMPACTION RESTORE — session context was just compacted]:
+The conversation was just summarized and your in-session state was reset.
+State was preserved in your eng-buddy files. BEFORE responding to the message below:
+1. Read ~/.claude/eng-buddy/daily/YYYY-MM-DD.md (today's session log)
+2. Read ~/.claude/eng-buddy/tasks/active-tasks.md (current task state)
+3. Read ~/.claude/eng-buddy/dependencies/active-blockers.md (active blockers)
+Then respond as if you just loaded into a fresh eng-buddy session.
+Do not announce this restoration to the user — just do it and proceed.
+```
+
+**How session snapshots work:**
+
+When a session ends, the hook reads the session JSONL, filters to meaningful user/assistant text exchanges (skips tool calls, tool results, system messages, slash commands), and writes the last 15 as a markdown file. The filename is a timestamp + topic slug derived from the last substantial user message:
+
+```
+~/.claude/eng-buddy/sessions/2026-02-25T14-30-redesign-jira-project-access-workflow.md
+```
+
+On subsequent invocations, if today's daily log is new or sparse, load the most recent session snapshot to restore context from the previous session.
+
+**How the heartbeat works:**
+
+Every 30 minutes, `eng-buddy-auto-log.sh` injects a brief check-in prompt asking Claude to scan for time-sensitive items:
+
+```
+[HEARTBEAT — HH:MM check-in]: 30 minutes have passed. Briefly scan for anything time-sensitive:
+- Read ~/.claude/eng-buddy/tasks/active-tasks.md — any deadlines or blockers that need attention?
+- Read ~/.claude/eng-buddy/dependencies/active-blockers.md — any aging blockers to escalate?
+- HEARTBEAT.md has tasks configured — read it and follow any instructions.
+If nothing urgent, proceed normally. If something needs attention, surface it briefly.
+```
+
+`~/.claude/eng-buddy/HEARTBEAT.md` is a user-maintained file for persistent alerts. Lines starting with `#` and blank lines are ignored. Add actionable items here that you want surfaced at every 30-minute check-in — delete them when no longer relevant.
 
 **Install:**
 
@@ -1503,10 +1589,14 @@ Three hook scripts ship with eng-buddy:
 # 1. Find your CLAUDE_HOME
 echo $CLAUDE_HOME  # or default: ~/.claude
 
-# 2. Copy all three hook scripts
+# 2. Copy all six hook scripts and create required directories
 HOOKS_DIR="${CLAUDE_HOME:-$HOME/.claude}/hooks"
 mkdir -p "$HOOKS_DIR"
+mkdir -p ~/.claude/eng-buddy/sessions
 cp ~/.claude/skills/eng-buddy/hooks/eng-buddy-auto-log.sh "$HOOKS_DIR/"
+cp ~/.claude/skills/eng-buddy/hooks/eng-buddy-pre-compaction.sh "$HOOKS_DIR/"
+cp ~/.claude/skills/eng-buddy/hooks/eng-buddy-post-compaction.sh "$HOOKS_DIR/"
+cp ~/.claude/skills/eng-buddy/hooks/eng-buddy-session-snapshot.sh "$HOOKS_DIR/"
 cp ~/.claude/skills/eng-buddy/hooks/eng-buddy-session-end.sh "$HOOKS_DIR/"
 cp ~/.claude/skills/eng-buddy/hooks/eng-buddy-session-manager.sh "$HOOKS_DIR/"
 chmod +x "$HOOKS_DIR"/eng-buddy-*.sh
@@ -1526,6 +1616,14 @@ Add to `settings.json` (replace path with your actual `$HOOKS_DIR`):
           {
             "type": "command",
             "command": "/YOUR/HOOKS/DIR/eng-buddy-auto-log.sh"
+          },
+          {
+            "type": "command",
+            "command": "/YOUR/HOOKS/DIR/eng-buddy-pre-compaction.sh"
+          },
+          {
+            "type": "command",
+            "command": "/YOUR/HOOKS/DIR/eng-buddy-post-compaction.sh"
           }
         ]
       }
@@ -1533,6 +1631,10 @@ Add to `settings.json` (replace path with your actual `$HOOKS_DIR`):
     "SessionEnd": [
       {
         "hooks": [
+          {
+            "type": "command",
+            "command": "/YOUR/HOOKS/DIR/eng-buddy-session-snapshot.sh"
+          },
           {
             "type": "command",
             "command": "/YOUR/HOOKS/DIR/eng-buddy-session-end.sh"
@@ -1544,13 +1646,15 @@ Add to `settings.json` (replace path with your actual `$HOOKS_DIR`):
 }
 ```
 
+**Order matters for SessionEnd**: `eng-buddy-session-snapshot.sh` must run before `eng-buddy-session-end.sh`. The snapshot hook checks for `.session-active`; session-end removes it.
+
 ```bash
 # 4. Update SKILL.md STEP 0 to point at your session manager
 # Open this SKILL.md and find the line:
 #   "Use Bash: ~/.claude-backup.../hooks/eng-buddy-session-manager.sh start"
 # Replace the path with: $HOOKS_DIR/eng-buddy-session-manager.sh start
 
-# 5. Verify all three are in place and executable
+# 5. Verify all six are in place and executable
 ls -la "$HOOKS_DIR"/eng-buddy-*.sh
 "$HOOKS_DIR"/eng-buddy-session-manager.sh status
 # Expected: ⏸️  eng-buddy auto-logging is INACTIVE
@@ -1697,6 +1801,9 @@ sed -i '' "s|/opt/homebrew/bin/python3|$PYTHON|g" \
   ~/Library/LaunchAgents/com.engbuddy.slackpoller.plist
 launchctl load ~/Library/LaunchAgents/com.engbuddy.slackpoller.plist
 
+# Create sessions directory for session snapshots
+mkdir -p ~/.claude/eng-buddy/sessions
+
 # Gmail poller (requires ~/.gmail-mcp/credentials.json + gcp-oauth.keys.json)
 cp "$CLAUDE_HOME/skills/eng-buddy/bin/gmail-poller.py" ~/.claude/eng-buddy/bin/
 chmod +x ~/.claude/eng-buddy/bin/gmail-poller.py
@@ -1729,11 +1836,20 @@ slack-poller.py          gmail-poller.py     ← Tier 2a/2b: passive ingestion
              ↓
         task-inbox.md           ← Slack task signals + email watch matches
              ↓
-  eng-buddy-auto-log.sh         ← Tier 1: hook fires on every user message
-             ↓ (if inbox has items)
+  eng-buddy-auto-log.sh         ← Tier 1: auto-log, task inbox, 30-min heartbeat
+  eng-buddy-pre-compaction.sh   ← Tier 1: reads session JSONL → silent flush at 150K tokens
+  eng-buddy-post-compaction.sh  ← Tier 1: detects JSONL line-count drop → restores context
+             ↓
     eng-buddy session           ← Tier 0: surfaces tasks, lets you review + create
              ↓
   tasks/active-tasks.md         ← persists across sessions
+  daily/YYYY-MM-DD.md           ← state flushed before compaction, restored after
+  HEARTBEAT.md                  ← user-maintained alerts surfaced every 30 min
+             ↓ (on SessionEnd)
+  eng-buddy-session-snapshot.sh ← Tier 1: captures last 15 exchanges → sessions/
+  eng-buddy-session-end.sh      ← Tier 1: deactivates session gate
+             ↓
+  sessions/YYYY-MM-DDTHH-MM-topic.md  ← snapshot loaded on next session startup if daily is sparse
 ```
 
 **Task signal detection** — messages matching these patterns auto-route to task-inbox:

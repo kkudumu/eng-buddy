@@ -1,298 +1,271 @@
-# 🛠️ eng-buddy — your on-call EA, built for engineers
+# eng-buddy
 
-Your intelligent assistant for staying organized, focused, and effective amid constant context switching and complex technical challenges.
+> Your on-call engineering assistant with a local dashboard, background pollers, and comprehensive self-tracking.
 
-## 🎯 What is eng-buddy?
+A Claude Code skill + local web dashboard that turns your `~/.claude/` directory into an intelligent engineering operations center. Background pollers watch Gmail, Slack, Jira, and Freshservice — surfacing actionable cards you can approve, hold, refine, or open as full Claude sessions.
 
-eng-buddy is a specialized Claude Code skill designed for senior IT systems engineers who juggle multiple projects, meetings, requests, and incidents daily. It provides:
+## What You Get
 
-- **📋 Intelligent Task Organization** - Prioritize and track work across systems
-- **📝 Meeting Intelligence** - Extract action items, decisions, and questions
-- **💬 Communication Management** - Track requests and follow-ups
-- **🔄 Context Switching Support** - Save/restore project state seamlessly
-- **🚨 Incident Tracking** - Document and learn from production issues
-- **🔔 Pattern Recognition** - Identify recurring problems and documentation gaps
-- **📊 Capacity Planning** - Monitor workload and prevent burnout
-- **💡 Learning Log** - Capture solutions and approaches that worked
+- **Dashboard** at `localhost:7777` — neo-brutalist dark-mode queue UI
+- **Background pollers** — Gmail, Slack, Jira, Freshservice feed cards into a local SQLite queue
+- **One-click execution** — approve a card and watch Claude execute it in a streaming terminal
+- **Refine before acting** — chat with Claude about a card before approving
+- **Open Session** — spawn a full interactive Claude session in Terminal.app for complex tasks
+- **Skill integration** — `/eng-buddy` auto-launches the dashboard and loads your full context
+- **Comprehensive tracking** — passive data collection on energy, decisions, context switches, patterns
 
-## ✨ Key Features
+## Quick Start
 
-### Persistent Memory Across Sessions
-- Hierarchical markdown file system (`daily/`, `weekly/`, `monthly/`, `knowledge/`)
-- Never lose context between conversations
-- Build on previous work automatically
+```bash
+# 1. Clone the repo (if you haven't already)
+git clone https://github.com/kkudumu/clod.git ~/.claude
 
-### Proactive Intelligence
-- **Recurring Issue Detection** - "You've solved this 3 times this month - should we document it?"
-- **Documentation Gap Analysis** - Identifies what needs runbooks based on patterns
-- **Blocker Escalation Alerts** - Warns when dependencies age beyond thresholds
-- **Capacity Monitoring** - Tracks context switches, on-call load, work hours
-- **Follow-up Tracking** - Reminds about overdue commitments
+# 2. Start the dashboard
+cd ~/.claude/eng-buddy/dashboard
+./start.sh
+# Opens at http://localhost:7777
 
-### Auto-Logging Hook System
-- Detects when you report completed actions
-- Automatically prompts Claude to log to your daily file
-- Only active during eng-buddy sessions
-- Zero manual intervention required
-
-### Meeting Processing
-Extract from transcripts:
-- ✅ Action items with owners and deadlines
-- ❓ Open questions needing clarification
-- 🎯 Technical decisions and rationale
-- 🚨 Risks and concerns mentioned
-
-### Systems Engineering Context
-- Understands infrastructure, deployments, operations
-- Considers reliability, scalability, security
-- Thinks through blast radius and rollback plans
-- Tracks system relationships and dependencies
-
-## 📦 Installation
-
-### Quick Start
-
-1. **Install the skill:**
-   ```bash
-   # Place in your Claude Code skills directory
-   cp -r eng-buddy ~/.claude/skills/
-   ```
-
-2. **Install the hooks (optional but recommended):**
-
-   Follow the detailed instructions in [INSTALL.md](./INSTALL.md)
-
-3. **Invoke the skill:**
-   ```
-   /eng-buddy
-   ```
-
-### Requirements
-
-- **Claude Code CLI** (or Claude.ai with skills support)
-- **macOS, Linux, or WSL** (for bash hooks)
-- **~/.claude/eng-buddy/** workspace directory (auto-created on first run)
-
-## 🚀 Usage
-
-### Starting a Session
-
-```
+# 3. Invoke the skill
+# In Claude Code:
 /eng-buddy
 ```
 
-eng-buddy will:
-1. Load your current context (today's tasks, blockers, capacity)
-2. Restore tasks from previous session
-3. Show proactive alerts (aging blockers, recurring issues, etc.)
-4. Suggest what to tackle first
+The dashboard auto-creates a Python venv and installs dependencies on first run.
 
-### Common Commands
-
-**During the session:**
-- "Help me process this meeting transcript" → Extracts action items, decisions
-- "I need to context switch" → Documents current state for restoration
-- "What's blocking me?" → Shows all active blockers with aging
-- "Am I overcommitted?" → Capacity analysis and recommendations
-- "Draft status update" → Generates stakeholder communication
-- "Wrap up" → Summarizes day, rolls forward open items
-
-### Daily Workflow Example
-
-```
-User: /eng-buddy
-eng-buddy: Good morning! Week 8 review:
-📌 Open Items: 7 action items (2 high priority)
-🚧 Active Blockers: 1 blocker (escalate today?)
-🔔 Recurring Issues:
-- Database timeout occurred 3x - document it?
-
-User: I completed the API migration and sent the status update
-eng-buddy: [Logs to daily file]
-
-User: Show me the GitHub incident from yesterday
-eng-buddy: [Retrieves incident details from incidents/]
-
-User: What patterns do you see this week?
-eng-buddy: [Analyzes recurring issues, questions, documentation gaps]
-
-User: Wrap up
-eng-buddy: [Summarizes, rolls forward open items to tomorrow]
-```
-
-## 📁 Workspace Structure
+## Architecture
 
 ```
 ~/.claude/eng-buddy/
-├── daily/                    # Daily working logs (2026-02-18.md)
-├── weekly/                   # Weekly summaries (2026-W08.md)
-├── monthly/                  # Monthly overviews (2026-02.md)
-├── knowledge/                # Static knowledge
-│   ├── infrastructure.md     # Systems, architecture
-│   ├── team.md              # People, roles
-│   ├── preferences.md       # Work style, preferences
-│   └── solutions.md         # Learning log
-├── patterns/                 # Intelligence
-│   ├── recurring-issues.md
-│   ├── recurring-questions.md
-│   └── documentation-gaps.md
-├── incidents/                # Incident tracking
-│   ├── incident-index.md
-│   └── 2026-02-18-*.md
-├── dependencies/             # Blockers and dependencies
-│   ├── active-blockers.md
-│   └── dependency-map.md
-├── capacity/                 # Time tracking
-│   ├── time-estimates.md
-│   ├── weekly-capacity.md
-│   └── burnout-indicators.md
-├── stakeholders/             # Communications
-│   ├── communication-log.md
-│   ├── follow-ups.md
-│   └── status-updates/
-├── references/               # API docs and technical refs
-└── archive/                  # Completed daily files
+├── dashboard/              # FastAPI web dashboard
+│   ├── server.py           # API: cards, SSE, WebSocket execution, refine, open-session
+│   ├── static/
+│   │   ├── index.html      # HTML skeleton
+│   │   ├── style.css       # Neo-brutalist dark CSS
+│   │   └── app.js          # Vanilla JS frontend (xterm.js for terminals)
+│   ├── tests/
+│   │   ├── conftest.py
+│   │   └── test_server.py
+│   ├── requirements.txt    # fastapi, uvicorn, ptyprocess
+│   └── start.sh            # One-command launcher
+├── bin/                    # Background pollers
+│   ├── gmail-poller.py     # Watches email threads/senders → cards
+│   ├── slack-poller.py     # DMs, @mentions, task signals → cards
+│   └── jira-poller.py      # Assigned issues → cards
+├── inbox.db                # SQLite card queue (auto-created)
+└── [personal data dirs]    # daily/, weekly/, knowledge/, etc. (gitignored)
 ```
 
-## 🔧 Hook System
+## Plugging In Your Own Stuff
 
-The optional hook system provides automatic progress logging:
+eng-buddy is designed to be fully portable. The framework ships empty — you populate it with your own integrations, knowledge, and credentials.
 
-### How It Works
+### 1. Gmail Poller
 
-1. **UserPromptSubmit Hook** - Detects when you report actions
-2. **Pattern Matching** - Recognizes phrases like "I completed", "I sent", "I fixed"
-3. **Auto-Logging Prompt** - Reminds Claude to log to daily file
-4. **Session-Gated** - Only fires during active eng-buddy sessions
-5. **Auto-Cleanup** - SessionEnd hook deactivates after session
+**What it does**: Watches for emails matching patterns you define, creates dashboard cards.
 
-### Installation
+**Setup**:
+```bash
+# a) Set up Gmail MCP credentials (required)
+# Follow: https://github.com/anthropics/gmail-mcp-server
+# Credentials land at: ~/.gmail-mcp/credentials.json and gcp-oauth.keys.json
 
-See [INSTALL.md](./INSTALL.md) for complete hook installation instructions.
-
-**TL;DR:**
-1. Copy `hooks/*.sh` to your `~/.claude/hooks/` directory
-2. Add hook configuration to `settings.json`
-3. Update paths in SKILL.md
-
-Hooks are **optional** - the skill works without them, you just won't get automatic logging prompts.
-
-## 💡 Example Scenarios
-
-### Processing Meeting Transcripts
-
-```
-User: [Pastes meeting transcript]
-User: Help me process this
-
-eng-buddy:
-## Action Items from Product Planning Meeting
-
-**High Priority:**
-- [ ] Design API schema for new feature - @You - Due Friday
-- [ ] Review security requirements with InfoSec - @You - This week
-
-**Open Questions:**
-- What's our rate limit strategy? (Critical for scaling)
-- Should we support batch operations? (Nice to have)
-
-**Decisions Made:**
-- Using REST API (not GraphQL) - simpler for initial launch
-- Launch with read-only endpoints first - write endpoints in v2
+# b) Create your watch list
+cp ~/.claude/eng-buddy/email-watches.md.example ~/.claude/eng-buddy/email-watches.md
 ```
 
-### Context Switching
+**Watch file format** (`email-watches.md`):
+```markdown
+## Watch: Vendor Response
+- From: vendor@example.com
+- Subject contains: renewal, contract
+- Action: create
 
-```
-User: I need to switch to the incident investigation
-
-eng-buddy: [Saves current project state]
-
-## Context Saved: API Migration
-- What I was doing: Writing integration tests for payment endpoints
-- Where I left off: 3 of 5 test cases complete
-- Next steps:
-  - Finish remaining test cases
-  - Run full test suite
-  - Deploy to staging
-- Blockers: Waiting on staging environment refresh
-
-Switching to: Incident Investigation
-[Loads incident context]
+## Watch: Boss Thread
+- Thread ID: 18d1a2b3c4d5e6f7
+- Task: #42
+- Action: update
 ```
 
-### Blocker Management
+**Install as LaunchAgent** (auto-runs every 10 min):
+```bash
+cat > ~/Library/LaunchAgents/com.engbuddy.gmailpoller.plist << 'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.engbuddy.gmailpoller</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/python3</string>
+    <string>${HOME}/.claude/eng-buddy/bin/gmail-poller.py</string>
+  </array>
+  <key>StartInterval</key><integer>600</integer>
+  <key>StandardOutPath</key><string>${HOME}/.claude/eng-buddy/gmail-poller.log</string>
+  <key>StandardErrorPath</key><string>${HOME}/.claude/eng-buddy/gmail-poller.log</string>
+</dict>
+</plist>
+EOF
+launchctl load ~/Library/LaunchAgents/com.engbuddy.gmailpoller.plist
+```
+
+### 2. Slack Poller
+
+**What it does**: Pulls DMs, @mentions, and messages matching task-signal patterns.
+
+**Setup**:
+```bash
+# Edit the poller and replace the token placeholder:
+# TOKEN = "YOUR_SLACK_USER_TOKEN"
+# Get a Slack user token from: https://api.slack.com/apps
+# Required scopes: channels:history, groups:history, im:history, mpim:history, users:read
+vi ~/.claude/eng-buddy/bin/slack-poller.py
+```
+
+**Install LaunchAgent** (same pattern as Gmail, 10-min interval).
+
+### 3. Jira Poller
+
+**What it does**: Uses Claude CLI + Atlassian MCP to fetch your assigned Jira issues.
+
+**Requires**:
+- Claude Code CLI installed
+- [Atlassian MCP server](https://github.com/sooperset/mcp-atlassian) configured in your `.claude.json`
+
+The poller calls `claude --dangerously-skip-permissions --print` to query Jira via MCP. No separate Jira credentials needed — it uses your existing MCP setup.
+
+**Install LaunchAgent** (5-min interval):
+```bash
+cat > ~/Library/LaunchAgents/com.engbuddy.jirapoller.plist << 'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.engbuddy.jirapoller</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/python3</string>
+    <string>${HOME}/.claude/eng-buddy/bin/jira-poller.py</string>
+  </array>
+  <key>StartInterval</key><integer>300</integer>
+  <key>StandardOutPath</key><string>${HOME}/.claude/eng-buddy/jira-poller.log</string>
+  <key>StandardErrorPath</key><string>${HOME}/.claude/eng-buddy/jira-poller.log</string>
+</dict>
+</plist>
+EOF
+launchctl load ~/Library/LaunchAgents/com.engbuddy.jirapoller.plist
+```
+
+### 4. Freshservice Poller
+
+**What it does**: Watches for new/updated Freshservice tickets assigned to you.
+
+**Setup**: Uses the Freshservice MCP server. Configure your MCP server in `.claude.json`, then create a poller following the same pattern as the Jira poller (call Claude CLI to query Freshservice MCP).
+
+### 5. Writing Your Own Poller
+
+Any script that writes rows to `inbox.db` becomes a card source. The schema:
+
+```sql
+CREATE TABLE cards (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source TEXT,                    -- 'gmail', 'slack', 'jira', 'freshservice', 'custom'
+    timestamp TEXT,                 -- ISO 8601 UTC
+    summary TEXT,                   -- Card title shown in dashboard
+    classification TEXT,            -- 'needs-response', 'fyi', 'action-required'
+    status TEXT DEFAULT 'pending',  -- 'pending', 'held', 'approved', 'completed', 'failed'
+    proposed_actions TEXT,          -- JSON array of action objects
+    execution_status TEXT DEFAULT 'not_run',
+    execution_result TEXT,
+    executed_at TEXT
+);
+```
+
+**Minimal Python example**:
+```python
+import sqlite3, json
+from datetime import datetime, timezone
+from pathlib import Path
+
+db = Path.home() / ".claude" / "eng-buddy" / "inbox.db"
+conn = sqlite3.connect(db)
+conn.execute("""INSERT INTO cards
+    (source, timestamp, summary, classification, status, proposed_actions, execution_status)
+    VALUES (?, ?, ?, ?, 'pending', ?, 'not_run')""",
+    ("my-custom-source",
+     datetime.now(timezone.utc).isoformat(),
+     "Something happened that needs attention",
+     "action-required",
+     json.dumps([{"type": "custom", "draft": "Do the thing"}])))
+conn.commit()
+conn.close()
+```
+
+## Dashboard API
+
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/` | GET | Dashboard UI |
+| `/api/health` | GET | Health check |
+| `/api/cards?status=pending&source=gmail` | GET | List cards with filters + counts |
+| `/api/cards/{id}/hold` | POST | Hold a card for later |
+| `/api/cards/{id}/status` | POST | Update card status |
+| `/api/events` | GET | SSE stream for new cards |
+| `/ws/execute/{id}` | WebSocket | Stream Claude execution output |
+| `/api/cards/{id}/refine` | POST | Chat about a card before execution |
+| `/api/cards/{id}/open-session` | POST | Spawn interactive Claude in Terminal.app |
+| `/api/notify` | POST | Fire macOS notification |
+
+## Personalizing the Workspace
+
+eng-buddy auto-creates these directories on first `/eng-buddy` invocation:
 
 ```
-User: What's blocking me?
-
-eng-buddy:
-## 🚧 Active Blockers
-
-**CRITICAL - Escalate Today:**
-### Waiting on Security team: API key rotation policy
-- Started: 15 days ago ⚠️ AGING
-- Blocking: 2 projects (New API, Mobile app)
-- Last follow-up: 3 days ago
-- Impact: Cannot deploy to production
-
-**Recommended actions:**
-1. Escalate to VP Engineering (Security team's manager)
-2. Propose alternative: Temporary approval with audit trail
-3. Schedule sync meeting with Security lead
-
-Want me to draft an escalation email?
+daily/          # Daily logs (auto-created per day)
+weekly/         # Weekly summaries
+knowledge/      # Your systems, team, preferences
+  infrastructure.md   # Your infrastructure and systems
+  team.md             # People you work with
+  preferences.md      # How you like to work
+patterns/       # Recurring issues, success/failure patterns
+capacity/       # Time tracking, burnout indicators
+stakeholders/   # Follow-ups, communication logs
+tasks/          # Active task state
 ```
 
-## 🎓 Personal Profile Integration
+All personal data directories are gitignored — your data stays local.
 
-eng-buddy includes optional personal profile tracking (`knowledge/kioja-profile.md` in the example) that helps Claude understand:
+## Skill Commands
 
-- Work patterns and communication style
-- Memory and organization preferences
-- Stress indicators and coping mechanisms
+In a `/eng-buddy` session:
 
-**Important:** Profile information is for Claude's understanding only - it won't reference personal details back to you.
+| Say this | Get this |
+|----------|----------|
+| "what happened today" | Comprehensive narrative analysis with data backing |
+| "what's blocking me?" | Active blockers with aging and escalation suggestions |
+| "am I overcommitted?" | Capacity analysis and recommendations |
+| "what patterns do you see?" | Recurring issues, questions, success/failure patterns |
+| "show my stats" | Key metrics: completion rate, energy, context switches |
+| "draft status update" | Generate stakeholder communication |
+| "wrap up" | Summarize day, roll forward open items |
 
-## 🤝 Contributing
+## Requirements
 
-### Making It Your Own
+- **macOS** (LaunchAgents, Terminal.app, osascript — Linux support is possible with cron + alternatives)
+- **Python 3.11+**
+- **Claude Code CLI** (`claude` in PATH)
+- **MCP servers** configured for the pollers you want to use
 
-1. **Customize knowledge files** - Add your systems, team, preferences
-2. **Adjust detection patterns** - Edit `hooks/eng-buddy-auto-log.sh`
-3. **Add custom workflows** - Extend SKILL.md with your patterns
-4. **Create team templates** - Share common incident/meeting templates
+## Checking Poller Status
 
-### Contributing Back
+```bash
+# See all running pollers
+launchctl list | grep engbuddy
 
-- Report bugs via GitHub issues
-- Share improvements via pull requests
-- Document patterns that worked for you
-- Help others in discussions
+# Check logs
+tail -f ~/.claude/eng-buddy/gmail-poller.log
+tail -f ~/.claude/eng-buddy/jira-poller.log
+```
 
-## 📝 License
+## License
 
-[Your chosen license - MIT recommended for open source]
-
-## 🙏 Acknowledgments
-
-Built for senior systems engineers who live in the intersection of:
-- Complex distributed systems
-- Constant interruptions and context switching
-- High-stakes production incidents
-- Cross-team coordination challenges
-- "Remember that thing from 3 weeks ago?" moments
-
-If you're constantly thinking "I should document this" but never have time - eng-buddy is for you.
-
-## 📬 Support
-
-- **Documentation**: [INSTALL.md](./INSTALL.md) for hook installation
-- **Issues**: [Report bugs or request features](#)
-- **Discussions**: [Share patterns and workflows](#)
-
----
-
-**Remember**: eng-buddy is as valuable as the context you give it. The more you use it, the smarter it becomes about your systems, patterns, and work style.
-
-Start today: `/eng-buddy`
+MIT — see [LICENSE](../LICENSE)

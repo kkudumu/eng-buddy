@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>eng-buddy</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css">
+</head>
+<body>
+  <header id="header">
+    <div id="header-title">ENG-BUDDY</div>
+    <div id="header-counts">
+      <span class="count-badge" id="count-pending">— pending</span>
+      <span class="count-badge held" id="count-held">— held</span>
+      <span class="count-badge running" id="count-running">— running</span>
+    </div>
+  </header>
+
+  <nav id="filter-bar">
+    <button class="filter-btn active" data-source="all">ALL</button>
+    <button class="filter-btn" data-source="freshservice">FRESHSERVICE</button>
+    <button class="filter-btn" data-source="jira">JIRA</button>
+    <button class="filter-btn" data-source="slack">SLACK</button>
+    <button class="filter-btn" data-source="gmail">GMAIL</button>
+    <button class="filter-btn approve-all" id="approve-all-btn">APPROVE ALL SAFE</button>
+  </nav>
+
+  <main id="queue"></main>
+
+  <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

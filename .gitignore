@@ -79,3 +79,30 @@ Temporary Items
 # Backup files
 *.bak
 *.backup
+
+# Dashboard runtime
+dashboard/venv/
+dashboard/__pycache__/
+
+# Runtime databases and state
+*.db
+*.db-journal
+*-state.json
+.last-heartbeat
+
+# Personal data directories
+analysis/
+drafts/
+docs/
+health/
+metrics/
+profiles/
+screen-analysis/
+screenshots/
+sessions/
+templates/
+
+# Personal files
+email-watches.md
+task-inbox.md
+action-log.md

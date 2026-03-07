@@ -2,7 +2,7 @@
 
 ## Overview
 
-The eng-buddy skill includes an intelligent auto-logging hook system that detects when you report completed actions and automatically prompts Claude to log them to your daily log.
+The eng-buddy skill includes a six-hook automation system that handles automatic progress logging, context preservation across compaction, session snapshots, and heartbeat monitoring. All hooks are session-gated — they only activate during active `/eng-buddy` sessions and deactivate automatically when the conversation ends.
 
 ## Installation Steps
 
@@ -46,6 +46,14 @@ chmod +x $CLAUDE_HOME/hooks/eng-buddy-*.sh
         "hooks": [
           {
             "type": "command",
+            "command": "/Users/YOUR_USERNAME/.claude/hooks/eng-buddy-pre-compaction.sh"
+          },
+          {
+            "type": "command",
+            "command": "/Users/YOUR_USERNAME/.claude/hooks/eng-buddy-post-compaction.sh"
+          },
+          {
+            "type": "command",
             "command": "/Users/YOUR_USERNAME/.claude/hooks/eng-buddy-auto-log.sh"
           }
         ]
@@ -54,6 +62,10 @@ chmod +x $CLAUDE_HOME/hooks/eng-buddy-*.sh
     "SessionEnd": [
       {
         "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/YOUR_USERNAME/.claude/hooks/eng-buddy-session-snapshot.sh"
+          },
           {
             "type": "command",
             "command": "/Users/YOUR_USERNAME/.claude/hooks/eng-buddy-session-end.sh"
@@ -66,6 +78,8 @@ chmod +x $CLAUDE_HOME/hooks/eng-buddy-*.sh
 ```
 
 **⚠️ Replace `/Users/YOUR_USERNAME/` with your actual home directory path!**
+
+**⚠️ SessionEnd ordering is critical**: `eng-buddy-session-snapshot.sh` MUST be listed before `eng-buddy-session-end.sh`. The snapshot reads `.session-active`; session-end removes it.
 
 ### 3. Update SKILL.md Paths
 
@@ -98,44 +112,66 @@ You should see: `⏸️  eng-buddy auto-logging is INACTIVE`
 
 1. **STEP 0 activates** → Runs `eng-buddy-session-manager.sh start`
 2. **Creates marker file** → `~/.claude/eng-buddy/.session-active`
-3. **Hook is now active** → Monitors your messages for progress updates
+3. **All hooks are now active** → Monitor messages, compaction events, and session state
 
-### During Your Session
+### During Your Session (on every user message)
 
-When you report actions like:
-- "I completed the feature"
-- "I sent the email"
-- "I fixed the bug"
-- "Just merged the PR"
+Three hooks fire on every `UserPromptSubmit`:
 
-The `UserPromptSubmit` hook detects these patterns and reminds Claude to log them to your daily file.
+1. **pre-compaction**: Checks if the context window is approaching its limit — if so, silently writes current session state to the daily log before compaction occurs.
+
+2. **post-compaction**: Checks if context was just compacted (conversation was summarized). If detected, injects a reminder for Claude to reload your workspace context from the daily log.
+
+3. **auto-log**: Detects progress update phrases ("I completed...", "I sent...", "I fixed...", etc.) and reminds Claude to log the action. Also runs the heartbeat check (~30-minute intervals) to surface items from `HEARTBEAT.md`.
 
 ### When Session Ends
 
-1. **SessionEnd hook fires** → Runs `eng-buddy-session-end.sh`
-2. **Removes marker file** → `~/.claude/eng-buddy/.session-active`
-3. **Hook deactivates** → Won't fire in other conversations
+1. **session-snapshot fires first** → Reads the session JSONL, filters to meaningful user/assistant exchanges, captures the last 15 as a dated markdown file in `sessions/`
+2. **session-end fires second** → Removes `.session-active` marker
+3. **All hooks deactivate** → Won't fire in other conversations
 
 ## Hook Files Explained
 
+### eng-buddy-session-manager.sh
+- **Trigger**: Called manually by SKILL.md STEP 0 (not wired as a hook)
+- **Purpose**: Gate all other hooks — creates/removes `.session-active` marker
+- **Commands**:
+  - `start` - Activates session (creates marker file)
+  - `stop` - Deactivates session (removes marker file)
+  - `status` - Check if session is active
+
+### eng-buddy-pre-compaction.sh
+- **Trigger**: UserPromptSubmit (every user message)
+- **Purpose**: Silently flush session state to daily log before context window fills
+- **Only runs when**: `.session-active` marker file exists
+- **How**: Checks approaching token limit; if near threshold, writes summary to daily log
+
+### eng-buddy-post-compaction.sh
+- **Trigger**: UserPromptSubmit (every user message)
+- **Purpose**: Detect context compaction and restore workspace state
+- **Only runs when**: `.session-active` marker file exists
+- **How**: Checks for compaction signals; if detected, injects context reload reminder
+
 ### eng-buddy-auto-log.sh
 - **Trigger**: UserPromptSubmit (every user message)
-- **Purpose**: Detects progress updates and prompts logging
+- **Purpose**: Detect progress updates and prompt logging; run heartbeat checks
 - **Only runs when**: `.session-active` marker file exists
-- **Detection patterns**: "I completed", "I sent", "I fixed", etc.
+- **Detection patterns**: "I completed", "I sent", "I fixed", "just merged", etc.
+- **Heartbeat**: Also surfaces items from `HEARTBEAT.md` on ~30-minute intervals
 
-### eng-buddy-session-manager.sh
-- **Trigger**: Manual or SKILL.md STEP 0
-- **Purpose**: Activate/deactivate the auto-logging system
-- **Commands**:
-  - `start` - Activates hook (creates marker file)
-  - `stop` - Deactivates hook (removes marker file)
-  - `status` - Check if hook is active
+### eng-buddy-session-snapshot.sh
+- **Trigger**: SessionEnd (when conversation ends)
+- **Purpose**: Capture last 15 meaningful exchanges as a dated markdown snapshot
+- **Only runs when**: `.session-active` marker file exists
+- **Output**: `~/.claude/eng-buddy/sessions/YYYY-MM-DDTHH-MM-topic.md`
+- **Minimum**: Requires ≥3 meaningful messages; skips trivial sessions
+- **⚠️ Must run BEFORE `eng-buddy-session-end.sh`** in settings.json
 
 ### eng-buddy-session-end.sh
 - **Trigger**: SessionEnd (when conversation ends)
-- **Purpose**: Auto-deactivate hook when session ends
+- **Purpose**: Auto-deactivate all hooks when session ends
 - **Action**: Removes `.session-active` marker file
+- **⚠️ Must run AFTER `eng-buddy-session-snapshot.sh`** in settings.json
 
 ## Troubleshooting
 
