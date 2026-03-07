@@ -17,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 
 DB_PATH = Path.home() / ".claude" / "eng-buddy" / "inbox.db"
 STATIC_DIR = Path(__file__).parent / "static"
+TERMINAL_APP = os.environ.get("ENG_BUDDY_TERMINAL", "Terminal")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -296,6 +297,21 @@ async def refine_card(card_id: int, body: dict = Body(...)):
 
     return {"response": response_text}
 
+@app.get("/api/settings")
+async def get_settings():
+    global TERMINAL_APP
+    return {"terminal": TERMINAL_APP}
+
+@app.post("/api/settings")
+async def update_settings(body: dict):
+    global TERMINAL_APP
+    if "terminal" in body:
+        allowed = {"Terminal", "Warp", "iTerm", "Alacritty", "kitty"}
+        if body["terminal"] not in allowed:
+            raise HTTPException(400, f"terminal must be one of {allowed}")
+        TERMINAL_APP = body["terminal"]
+    return {"terminal": TERMINAL_APP}
+
 @app.post("/api/cards/{card_id}/open-session")
 async def open_session(card_id: int):
     """Spawn a full interactive claude session in a new terminal window."""
@@ -333,11 +349,23 @@ async def open_session(card_id: int):
 
     os.chmod(launcher, 0o755)
 
-    # Open new Terminal window running the launcher script
-    script = f'tell application "Terminal"\ndo script "{launcher}"\nactivate\nend tell'
-    subprocess.Popen(["osascript", "-e", script])
+    # Open in configured terminal
+    if TERMINAL_APP == "Warp":
+        subprocess.Popen(["open", "-a", "Warp", launcher])
+    elif TERMINAL_APP == "iTerm":
+        script = (
+            f'tell application "iTerm"\n'
+            f'create window with default profile command "{launcher}"\n'
+            f'activate\nend tell'
+        )
+        subprocess.Popen(["osascript", "-e", script])
+    elif TERMINAL_APP in ("Alacritty", "kitty"):
+        subprocess.Popen(["open", "-a", TERMINAL_APP, "--args", "-e", launcher])
+    else:
+        script = f'tell application "Terminal"\ndo script "{launcher}"\nactivate\nend tell'
+        subprocess.Popen(["osascript", "-e", script])
 
-    return {"status": "opened", "launcher": launcher}
+    return {"status": "opened", "terminal": TERMINAL_APP, "launcher": launcher}
 
 @app.post("/api/notify")
 async def notify(body: dict):

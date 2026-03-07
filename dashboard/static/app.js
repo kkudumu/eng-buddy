@@ -288,7 +288,26 @@ function connectSSE() {
   es.onerror = () => setTimeout(connectSSE, 5000);
 }
 
+// -- Terminal setting ---------------------------------------------------------
+
+async function loadTerminalSetting() {
+  try {
+    const r = await fetch('/api/settings');
+    const data = await r.json();
+    document.getElementById('terminal-select').value = data.terminal || 'Terminal';
+  } catch {}
+}
+
+document.getElementById('terminal-select').addEventListener('change', async (e) => {
+  await fetch('/api/settings', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ terminal: e.target.value })
+  });
+});
+
 // -- Init ---------------------------------------------------------------------
 
 loadQueue();
 connectSSE();
+loadTerminalSetting();
