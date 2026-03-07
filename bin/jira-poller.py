@@ -29,9 +29,10 @@ def fetch_jira_issues():
     """Use claude --print to call Atlassian MCP and get assigned issues."""
     prompt = (
         "Use the Atlassian MCP tools to find my current sprint tasks:\n"
-        "1. Call jira_get_agile_boards to find the board with 'Systems' in its name.\n"
-        "2. Call jira_get_sprints_from_board with that board's ID, state='active' to get the current sprint.\n"
-        "3. Call jira_search with JQL: assignee = 'kioja.kudumu@klaviyo.com' "
+        "1. Call jira_get_agile_boards with board_name='Systems'.\n"
+        "2. Call jira_get_sprints_from_board with that board's ID, state='active'.\n"
+        "3. If multiple active sprints, pick the one whose name starts with 'SYSTEMS'.\n"
+        "4. Call jira_search with JQL: assignee = 'kioja.kudumu@klaviyo.com' "
         "AND sprint = <sprint_id> ORDER BY priority DESC, status ASC\n"
         "Fields: summary,status,priority,issuetype,labels,updated. Limit: 30.\n"
         "Return ONLY a JSON array of objects with keys: "

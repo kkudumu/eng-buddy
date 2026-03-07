@@ -520,9 +520,10 @@ async def jira_sprint(refresh: bool = False):
 
     prompt = (
         f"Use the Atlassian MCP tools to find my current sprint tasks:\n"
-        f"1. Call jira_get_agile_boards to find the board with '{JIRA_BOARD}' in its name.\n"
-        f"2. Call jira_get_sprints_from_board with that board's ID, state='active' to get the current sprint.\n"
-        f"3. Call jira_search with JQL: {user_clause} AND sprint = <sprint_id> ORDER BY priority DESC, status ASC\n"
+        f"1. Call jira_get_agile_boards with board_name='{JIRA_BOARD}'.\n"
+        f"2. Call jira_get_sprints_from_board with that board's ID, state='active'.\n"
+        f"3. If multiple active sprints, pick the one whose name starts with 'SYSTEMS'.\n"
+        f"4. Call jira_search with JQL: {user_clause} AND sprint = <sprint_id> ORDER BY priority DESC, status ASC\n"
         f"   Fields: summary,status,priority,issuetype,labels,updated. Limit: 30.\n"
         f"Return ONLY a JSON array of objects with keys: "
         f"key, summary, status (string), status_category (To Do/In Progress/Done), "
