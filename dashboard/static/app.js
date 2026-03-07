@@ -220,6 +220,58 @@ async function sendRefine(id) {
   history.scrollTop = history.scrollHeight;
 }
 
+// -- Jira Sprint Board --------------------------------------------------------
+
+function statusColor(status) {
+  const s = (status || '').toLowerCase();
+  if (s.includes('done')) return 'var(--fresh)';
+  if (s.includes('progress') || s.includes('review')) return 'var(--jira)';
+  return 'var(--muted)';
+}
+
+function renderJiraIssue(issue) {
+  const labels = (issue.labels || []).map(l => `<span class="jira-label">${escHtml(l)}</span>`).join('');
+  const prio = (issue.priority || '').toLowerCase();
+  const prioIcon = prio.includes('high') ? '!!!' : prio.includes('low') ? '.' : '!!';
+  return `
+    <div class="jira-issue" data-key="${issue.key}">
+      <div class="jira-issue-key">${escHtml(issue.key)}</div>
+      <div class="jira-issue-summary">${escHtml(issue.summary)}</div>
+      <div class="jira-issue-meta">
+        <span class="jira-status" style="color:${statusColor(issue.status)}">${escHtml(issue.status)}</span>
+        <span class="jira-prio">${prioIcon}</span>
+        ${labels}
+      </div>
+    </div>`;
+}
+
+function renderSprintBoard(board) {
+  const col = (title, items, cls) => `
+    <div class="board-col ${cls}">
+      <div class="board-col-header">${title} <span class="board-col-count">${items.length}</span></div>
+      ${items.map(renderJiraIssue).join('') || '<div class="board-empty">None</div>'}
+    </div>`;
+
+  return `
+    <div class="sprint-board">
+      ${col('TO DO', board.todo, 'col-todo')}
+      ${col('IN PROGRESS', board.in_progress, 'col-progress')}
+      ${col('DONE', board.done, 'col-done')}
+    </div>`;
+}
+
+async function loadSprintBoard() {
+  const queue = document.getElementById('queue');
+  queue.innerHTML = '<div style="color:#666;padding:40px;text-align:center;letter-spacing:4px">LOADING SPRINT...</div>';
+  try {
+    const r = await fetch('/api/jira/sprint');
+    const data = await r.json();
+    queue.innerHTML = renderSprintBoard(data.board);
+  } catch (e) {
+    queue.innerHTML = `<div style="color:#ea4335;padding:40px;text-align:center;">Failed to load sprint: ${e.message}</div>`;
+  }
+}
+
 // -- Counts -------------------------------------------------------------------
 
 function updateCounts() {
@@ -259,7 +311,11 @@ document.querySelectorAll('.filter-btn[data-source]').forEach(btn => {
     document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     activeFilter = btn.dataset.source;
-    loadQueue(activeFilter);
+    if (activeFilter === 'jira') {
+      loadSprintBoard();
+    } else {
+      loadQueue(activeFilter);
+    }
   });
 });
 

@@ -259,3 +259,88 @@ body {
   min-height: 42px;
 }
 .refine-input:focus { border-color: var(--needs-response); }
+
+/* SPRINT BOARD */
+.sprint-board {
+  display: flex;
+  gap: 16px;
+  min-height: 400px;
+}
+
+.board-col {
+  flex: 1;
+  border: 2px solid #333;
+  background: var(--card-bg);
+  display: flex;
+  flex-direction: column;
+}
+
+.board-col-header {
+  padding: 12px 16px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 3px;
+  border-bottom: 2px solid #333;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.col-todo .board-col-header { color: var(--muted); }
+.col-progress .board-col-header { color: var(--jira); }
+.col-done .board-col-header { color: var(--fresh); }
+
+.board-col-count {
+  background: #222;
+  padding: 2px 8px;
+  font-size: 10px;
+  border: 1px solid #444;
+}
+
+.jira-issue {
+  padding: 12px 16px;
+  border-bottom: 1px solid #222;
+  cursor: default;
+  transition: background 0.1s;
+}
+.jira-issue:hover { background: #222; }
+
+.jira-issue-key {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  color: var(--jira);
+  margin-bottom: 4px;
+}
+
+.jira-issue-summary {
+  font-size: 12px;
+  line-height: 1.5;
+  margin-bottom: 6px;
+}
+
+.jira-issue-meta {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.jira-status { font-size: 10px; font-weight: 700; letter-spacing: 1px; }
+.jira-prio { font-size: 10px; color: var(--muted); }
+
+.jira-label {
+  font-size: 9px;
+  padding: 1px 6px;
+  border: 1px solid #444;
+  color: var(--muted);
+  letter-spacing: 1px;
+}
+
+.board-empty {
+  padding: 24px;
+  text-align: center;
+  color: #444;
+  letter-spacing: 2px;
+  font-size: 11px;
+}

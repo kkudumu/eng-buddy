@@ -18,6 +18,10 @@ from fastapi.staticfiles import StaticFiles
 DB_PATH = Path.home() / ".claude" / "eng-buddy" / "inbox.db"
 STATIC_DIR = Path(__file__).parent / "static"
 TERMINAL_APP = os.environ.get("ENG_BUDDY_TERMINAL", "Terminal")
+JIRA_USER = os.environ.get("ENG_BUDDY_JIRA_USER", "")
+
+# In-memory cache for Jira sprint data
+_jira_cache = {"data": None, "fetched_at": 0}
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -366,6 +370,58 @@ async def open_session(card_id: int):
         subprocess.Popen(["osascript", "-e", script])
 
     return {"status": "opened", "terminal": TERMINAL_APP, "launcher": launcher}
+
+@app.get("/api/jira/sprint")
+async def jira_sprint(refresh: bool = False):
+    """Fetch current sprint tasks via claude CLI + Atlassian MCP."""
+    import time
+
+    # Return cached data if fresh (< 2 min) and no forced refresh
+    if not refresh and _jira_cache["data"] and (time.time() - _jira_cache["fetched_at"]) < 120:
+        return _jira_cache["data"]
+
+    user_clause = f'assignee = "{JIRA_USER}" AND ' if JIRA_USER else "assignee = currentUser() AND "
+    jql = f'{user_clause}sprint in openSprints() ORDER BY priority DESC, status ASC'
+
+    prompt = (
+        f"Use the Atlassian MCP jira_search tool with this JQL: {jql}\n"
+        f"Fields: summary,status,priority,issuetype,labels,updated\n"
+        f"Limit: 30\n"
+        f"Return ONLY a JSON array of objects with keys: "
+        f"key, summary, status (string), status_category (To Do/In Progress/Done), "
+        f"priority, issue_type, labels (array), updated. "
+        f"No prose, just the JSON array."
+    )
+
+    try:
+        result = subprocess.run(
+            ["claude", "--dangerously-skip-permissions", "--print", prompt],
+            capture_output=True, text=True, timeout=45
+        )
+        output = result.stdout.strip()
+        match = re.search(r'\[.*\]', output, re.DOTALL)
+        if match:
+            issues = json.loads(match.group(0))
+        else:
+            issues = []
+    except Exception as e:
+        raise HTTPException(500, f"Jira fetch failed: {e}")
+
+    # Group by status category for board view
+    board = {"todo": [], "in_progress": [], "done": []}
+    for issue in issues:
+        cat = (issue.get("status_category") or "").lower().replace(" ", "_")
+        if cat == "to_do":
+            board["todo"].append(issue)
+        elif cat == "done":
+            board["done"].append(issue)
+        else:
+            board["in_progress"].append(issue)
+
+    response = {"issues": issues, "board": board, "total": len(issues)}
+    _jira_cache["data"] = response
+    _jira_cache["fetched_at"] = time.time()
+    return response
 
 @app.post("/api/notify")
 async def notify(body: dict):
