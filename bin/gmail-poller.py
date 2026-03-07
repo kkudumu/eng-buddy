@@ -12,6 +12,7 @@ Watch sources:
 
 import json
 import re
+import sqlite3
 import sys
 import time
 import base64
@@ -244,6 +245,32 @@ def append_to_task_inbox(sender, subject, snippet, watch, msg_id, dt_str):
         f.write(f"<!-- msg:{msg_id} -->\n\n")
 
 
+def write_to_inbox_db(sender, subject, snippet, watch, classification="needs-response"):
+    """Write a card to inbox.db for the dashboard."""
+    from datetime import timezone
+    db = BASE_DIR / "inbox.db"
+    if not db.exists():
+        return
+    proposed_actions = json.dumps([{
+        "type": "reply_to_email",
+        "draft": f"Review and respond to email from {sender}: {subject}",
+        "source": "gmail",
+        "watch": watch.get("title", ""),
+    }])
+    conn = sqlite3.connect(db)
+    conn.execute(
+        """INSERT INTO cards
+           (source, timestamp, summary, classification, status, proposed_actions, execution_status)
+           VALUES ('gmail', ?, ?, ?, 'pending', ?, 'not_run')""",
+        (datetime.now(timezone.utc).isoformat(),
+         f"{sender}: {subject}",
+         classification,
+         proposed_actions)
+    )
+    conn.commit()
+    conn.close()
+
+
 # --- Notifications ---
 
 def notify(title, message):
@@ -340,6 +367,7 @@ def main():
                     "dt":      dt_str,
                 })
                 append_to_task_inbox(msg_from, msg_subject, snippet, watch, msg_id, dt_str)
+                write_to_inbox_db(msg_from, msg_subject, snippet, watch)
                 _, sender_name = parseaddr(msg_from)
                 notify(
                     title=f"eng-buddy: {watch['title']}",
