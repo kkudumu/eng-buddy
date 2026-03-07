@@ -670,21 +670,34 @@ async def get_briefing(regenerate: bool = False):
     cards_data = [dict(r) for r in pending_cards]
     stats_data = {r[0]: r[1] for r in stats} if stats else {}
 
-    # Build briefing prompt
+    # Build briefing prompt — summarize cards to keep prompt small
     sys_path = Path(__file__).parent.parent / "bin"
     sys.path.insert(0, str(sys_path))
     from brain import build_context_prompt
+
+    # Group cards by source for a compact summary
+    by_source = {}
+    for c in cards_data:
+        src = c.get("source", "unknown")
+        by_source.setdefault(src, []).append(c.get("summary", "?")[:80])
+    cards_summary = ""
+    for src, summaries in by_source.items():
+        cards_summary += f"\n{src} ({len(summaries)} pending):\n"
+        for s in summaries[:5]:
+            cards_summary += f"  - {s}\n"
+        if len(summaries) > 5:
+            cards_summary += f"  ... and {len(summaries) - 5} more\n"
 
     context = build_context_prompt()
     prompt = f"""{context}
 
 Generate a morning briefing for today ({today}). You have:
 
-PENDING CARDS:
-{json.dumps(cards_data, indent=2)}
+PENDING CARDS SUMMARY:
+{cards_summary}
 
 YESTERDAY'S STATS:
-{json.dumps(stats_data, indent=2)}
+{json.dumps(stats_data)}
 
 Return a JSON object with these sections:
 {{
@@ -714,16 +727,17 @@ Return ONLY the JSON. No prose."""
     except Exception as e:
         briefing = {"error": str(e)}
 
-    # Cache it
-    conn = get_db()
-    try:
-        conn.execute(
-            "INSERT OR REPLACE INTO briefings (date, content, generated_at) VALUES (?, ?, ?)",
-            [today, json.dumps(briefing), datetime.now().isoformat()]
-        )
-        conn.commit()
-    finally:
-        conn.close()
+    # Only cache successful briefings
+    if "error" not in briefing:
+        conn = get_db()
+        try:
+            conn.execute(
+                "INSERT OR REPLACE INTO briefings (date, content, generated_at) VALUES (?, ?, ?)",
+                [today, json.dumps(briefing), datetime.now().isoformat()]
+            )
+            conn.commit()
+        finally:
+            conn.close()
 
     return briefing
 

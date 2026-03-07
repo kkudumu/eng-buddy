@@ -28,8 +28,11 @@ def set_last_checked(ts):
 def fetch_jira_issues():
     """Use claude --print to call Atlassian MCP and get assigned issues."""
     prompt = (
-        "Use the Atlassian MCP to search for Jira issues assigned to me "
-        "with status not in (Done, Closed, Resolved). "
+        "Use the Atlassian MCP jira_search tool with this JQL: "
+        "assignee = 'kioja.kudumu@klaviyo.com' AND sprint in openSprints() "
+        "ORDER BY priority DESC, status ASC\n"
+        "Fields: summary,status,priority,issuetype,labels,updated\n"
+        "Limit: 30\n"
         "Return ONLY a JSON array of objects with keys: "
         "key, summary, status, priority, updated, url. "
         "No prose, just the JSON array."

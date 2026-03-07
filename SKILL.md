@@ -19,6 +19,23 @@ STEP 0: Activate auto-logging hook (MUST DO FIRST)
 - This enables automatic progress logging for this session
 - Hook will detect when you report completed actions and prompt logging
 
+STEP 0.5: Launch dashboard (MUST DO ON EVERY INVOCATION)
+- Use Bash (run in background): ~/.claude/eng-buddy/dashboard/start.sh --background
+- This starts the FastAPI dashboard at http://localhost:7777 if not already running
+- Then open it in the user's default browser:
+  - Use Bash: open http://localhost:7777
+- If start.sh outputs "ALREADY_RUNNING", just open browser tab
+- If start.sh outputs "STARTED", open browser tab
+- If start.sh outputs "TIMEOUT", warn the user: "Dashboard failed to start — check ~/.claude/eng-buddy/dashboard.log"
+- Tell the user: "Dashboard is live at http://localhost:7777"
+
+STEP 0.7: Start pollers (MUST DO ON EVERY INVOCATION)
+- Use Bash: bash ~/.claude/skills/eng-buddy/bin/start-pollers.sh
+- This syncs poller scripts to runtime, installs/reloads LaunchAgents, and runs an initial poll
+- Pollers: Slack (5min), Gmail (10min), Calendar (30min), Jira (5min)
+- If output contains "POLLERS_OK", pollers are running
+- If any errors, warn user but continue (pollers are non-blocking)
+
 STEP 1: Check if workspace exists
 - Use Bash: ls -la ~/.claude/eng-buddy/ 2>/dev/null || echo "WORKSPACE_DOES_NOT_EXIST"
 

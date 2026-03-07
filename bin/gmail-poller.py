@@ -337,13 +337,13 @@ def main():
     already_seen = set(state.get("seen_msg_ids", []))
     new_seen     = set()
 
-    # Scan all inbox emails from last 3 days
-    query = "in:inbox newer_than:3d"
+    # Scan inbox + sent emails from last 3 days
+    query = "(in:inbox OR in:sent) newer_than:3d"
     result = gmail_get("messages", {"q": query, "maxResults": 50}, token=token)
     messages = result.get("messages", [])
 
     if not messages:
-        print(f"[{datetime.now().strftime('%H:%M')}] No inbox emails in last 3 days")
+        print(f"[{datetime.now().strftime('%H:%M')}] No emails in last 3 days")
         state["last_check_ts"] = int(datetime.now().timestamp())
         save_state(state)
         return
