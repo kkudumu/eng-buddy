@@ -94,6 +94,7 @@ dashboard/__pycache__/
 analysis/
 drafts/
 docs/
+!docs/plans/
 health/
 metrics/
 profiles/
