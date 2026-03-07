@@ -4,8 +4,10 @@ import os
 import re
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import threading
+from datetime import datetime
 from pathlib import Path
 from contextlib import asynccontextmanager
 
@@ -14,6 +16,7 @@ import uvicorn
 from fastapi import Body, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from migrate import migrate
 
 DB_PATH = Path.home() / ".claude" / "eng-buddy" / "inbox.db"
 STATIC_DIR = Path(__file__).parent / "static"
@@ -26,6 +29,7 @@ _jira_cache = {"data": None, "fetched_at": 0}
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     STATIC_DIR.mkdir(exist_ok=True)
+    migrate()
     yield
 
 app = FastAPI(lifespan=lifespan)
@@ -45,7 +49,7 @@ async def health():
     return {"status": "ok"}
 
 @app.get("/api/cards")
-async def get_cards(source: str = None, status: str = "pending"):
+async def get_cards(source: str = None, status: str = "pending", section: str = None):
     conn = get_db()
     try:
         query = "SELECT * FROM cards WHERE status = ?"
@@ -53,6 +57,9 @@ async def get_cards(source: str = None, status: str = "pending"):
         if source:
             query += " AND source = ?"
             params.append(source)
+        if section:
+            query += " AND section = ?"
+            params.append(section)
         query += " ORDER BY timestamp DESC"
         rows = conn.execute(query, params).fetchall()
         cards = []
@@ -99,6 +106,102 @@ async def update_card_status(card_id: int, body: dict):
         return {"id": card_id, "status": new_status}
     finally:
         conn.close()
+
+@app.post("/api/cards/{card_id}/send-slack")
+async def send_slack_draft(card_id: int):
+    """Send the draft response to Slack via MCP."""
+    conn = get_db()
+    try:
+        row = conn.execute("SELECT * FROM cards WHERE id = ?", [card_id]).fetchone()
+        if not row:
+            raise HTTPException(404, "card not found")
+        card = dict(row)
+    finally:
+        conn.close()
+
+    draft = card.get("draft_response", "")
+    if not draft:
+        raise HTTPException(400, "no draft response")
+
+    actions = json.loads(card.get("proposed_actions") or "[]")
+    channel = ""
+    thread_ts = ""
+    for a in actions:
+        channel = a.get("channel_id", channel)
+        thread_ts = a.get("thread_ts", thread_ts)
+
+    if not channel:
+        raise HTTPException(400, "no channel info in card")
+
+    prompt = (
+        f"Use the Slack MCP slack_reply_to_thread tool. "
+        f"Channel: {channel}, thread_ts: {thread_ts}, "
+        f"text: {json.dumps(draft)}"
+    )
+    result = subprocess.run(
+        ["claude", "--dangerously-skip-permissions", "--print", prompt],
+        capture_output=True, text=True, timeout=30
+    )
+
+    conn = get_db()
+    conn.execute(
+        "UPDATE cards SET status = 'completed', responded = 1, section = 'no-action' WHERE id = ?",
+        [card_id]
+    )
+    conn.commit()
+    conn.close()
+
+    _record_stat("drafts_sent")
+    return {"status": "sent", "output": result.stdout[:500]}
+
+
+@app.post("/api/cards/{card_id}/send-email")
+async def send_email_draft(card_id: int):
+    """Send the draft email response via Gmail MCP."""
+    conn = get_db()
+    try:
+        row = conn.execute("SELECT * FROM cards WHERE id = ?", [card_id]).fetchone()
+        if not row:
+            raise HTTPException(404, "card not found")
+        card = dict(row)
+    finally:
+        conn.close()
+
+    draft = card.get("draft_response", "")
+    if not draft:
+        raise HTTPException(400, "no draft response")
+
+    actions = json.loads(card.get("proposed_actions") or "[]")
+    thread_id = ""
+    to_email = ""
+    subject = ""
+    for a in actions:
+        thread_id = a.get("thread_id", thread_id)
+        to_email = a.get("to_email", to_email)
+        subject = a.get("subject", subject)
+
+    prompt = (
+        f"Use the Gmail MCP send_email tool to reply. "
+        f"To: {to_email}, Subject: Re: {subject}, "
+        f"Body: {json.dumps(draft)}, "
+        f"threadId: {thread_id}"
+    )
+    result = subprocess.run(
+        ["claude", "--dangerously-skip-permissions", "--print", prompt],
+        capture_output=True, text=True, timeout=30
+    )
+
+    conn = get_db()
+    conn.execute(
+        "UPDATE cards SET status = 'completed', responded = 1, section = 'no-action' WHERE id = ?",
+        [card_id]
+    )
+    conn.commit()
+    conn.close()
+
+    _record_stat("drafts_sent")
+    return {"status": "sent", "output": result.stdout[:500]}
+
 
 async def card_event_generator():
     """Yield new cards as SSE events."""
@@ -430,6 +533,216 @@ async def notify(body: dict):
     script = f'display notification "{msg}" with title "{title}" sound name "Glass"'
     subprocess.Popen(["osascript", "-e", script])
     return {"ok": True}
+
+@app.get("/api/briefing")
+async def get_briefing(regenerate: bool = False):
+    """Generate or return cached morning briefing."""
+    from datetime import date, timedelta
+    today = date.today().isoformat()
+
+    conn = get_db()
+    try:
+        # Check cache
+        if not regenerate:
+            row = conn.execute(
+                "SELECT content FROM briefings WHERE date = ?", [today]
+            ).fetchone()
+            if row:
+                return json.loads(row[0])
+
+        # Gather data for briefing
+        pending_cards = conn.execute(
+            "SELECT source, section, summary, context_notes, draft_response FROM cards WHERE status = 'pending' ORDER BY timestamp DESC LIMIT 30"
+        ).fetchall()
+
+        # Get yesterday's stats
+        yesterday = (date.today() - timedelta(days=1)).isoformat()
+        stats = conn.execute(
+            "SELECT metric, SUM(value) FROM stats WHERE date = ? GROUP BY metric", [yesterday]
+        ).fetchall()
+    finally:
+        conn.close()
+
+    cards_data = [dict(r) for r in pending_cards]
+    stats_data = {r[0]: r[1] for r in stats} if stats else {}
+
+    # Build briefing prompt
+    sys_path = Path(__file__).parent.parent / "bin"
+    sys.path.insert(0, str(sys_path))
+    from brain import build_context_prompt
+
+    context = build_context_prompt()
+    prompt = f"""{context}
+
+Generate a morning briefing for today ({today}). You have:
+
+PENDING CARDS:
+{json.dumps(cards_data, indent=2)}
+
+YESTERDAY'S STATS:
+{json.dumps(stats_data, indent=2)}
+
+Return a JSON object with these sections:
+{{
+  "date": "{today}",
+  "meetings": [{{  "time": "HH:MM", "title": "...", "prep": "..." }}],
+  "needs_response": [{{"source": "slack|gmail", "summary": "...", "age": "...", "has_draft": true}}],
+  "alerts": [{{"summary": "...", "urgency": "high|medium|low"}}],
+  "sprint_status": {{"in_progress": 0, "todo": 0, "done": 0, "blockers": []}},
+  "cognitive_load": {{"level": "LOW|MODERATE|HIGH|OVERLOADED", "meeting_count": 0, "action_count": 0, "deep_work_window": "HH:MM-HH:MM", "heaviest_block": "HH:MM-HH:MM"}},
+  "stats": {{"drafts_sent": 0, "cards_triaged": 0, "time_saved_min": 0, "week_total_triaged": 0}},
+  "heads_up": ["stakeholder waiting...", "SLA deadline...", ...],
+  "pep_talk": "Personalized encouragement based on workload and recent velocity."
+}}
+
+Return ONLY the JSON. No prose."""
+
+    try:
+        result = subprocess.run(
+            ["claude", "--dangerously-skip-permissions", "--print", prompt],
+            capture_output=True, text=True, timeout=60
+        )
+        match = re.search(r'\{.*\}', result.stdout, re.DOTALL)
+        if match:
+            briefing = json.loads(match.group(0))
+        else:
+            briefing = {"error": "Failed to generate briefing", "raw": result.stdout[:500]}
+    except Exception as e:
+        briefing = {"error": str(e)}
+
+    # Cache it
+    conn = get_db()
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO briefings (date, content, generated_at) VALUES (?, ?, ?)",
+            [today, json.dumps(briefing), datetime.now().isoformat()]
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    return briefing
+
+
+@app.get("/api/filters/suggestions")
+async def get_filter_suggestions():
+    """Return pending filter suggestions."""
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM filter_suggestions WHERE status = 'suggest' ORDER BY ignore_count DESC"
+        ).fetchall()
+        return {"suggestions": [dict(r) for r in rows]}
+    finally:
+        conn.close()
+
+
+@app.post("/api/filters/create")
+async def create_gmail_filter(body: dict):
+    """Create a Gmail filter via MCP and record it."""
+    pattern = body.get("pattern", "")
+    label_name = body.get("label", "")
+    suggestion_id = body.get("suggestion_id")
+
+    if not pattern or not label_name:
+        raise HTTPException(400, "pattern and label required")
+
+    prompt = (
+        f"Use the Gmail MCP. First, use get_or_create_label to ensure label '{label_name}' exists. "
+        f"Then use create_filter with criteria matching from:{pattern}, "
+        f"and action to add label '{label_name}' and skip inbox (removeLabelIds: ['INBOX']). "
+        f"Return the filter ID."
+    )
+    result = subprocess.run(
+        ["claude", "--dangerously-skip-permissions", "--print", prompt],
+        capture_output=True, text=True, timeout=30
+    )
+
+    if suggestion_id:
+        conn = get_db()
+        conn.execute(
+            "UPDATE filter_suggestions SET status = 'created' WHERE id = ?",
+            [suggestion_id]
+        )
+        conn.commit()
+        conn.close()
+
+    _record_stat("filters_created")
+    return {"status": "created", "output": result.stdout[:500]}
+
+
+@app.post("/api/filters/dismiss")
+async def dismiss_filter_suggestion(body: dict):
+    """Dismiss a filter suggestion."""
+    suggestion_id = body.get("suggestion_id")
+    permanent = body.get("permanent", False)
+    conn = get_db()
+    status = "never" if permanent else "dismissed"
+    conn.execute(
+        "UPDATE filter_suggestions SET status = ? WHERE id = ?",
+        [status, suggestion_id]
+    )
+    conn.commit()
+    conn.close()
+    return {"status": status}
+
+
+@app.post("/api/cards/{card_id}/dismiss")
+async def dismiss_card(card_id: int):
+    """Move card to no-action section."""
+    conn = get_db()
+    try:
+        conn.execute(
+            "UPDATE cards SET section = 'no-action' WHERE id = ?", [card_id]
+        )
+        conn.commit()
+
+        # Track for adaptive filtering
+        row = conn.execute("SELECT source, summary FROM cards WHERE id = ?", [card_id]).fetchone()
+        if row and row[0] == "gmail":
+            _track_ignored_pattern(conn, row[1])
+
+        return {"id": card_id, "section": "no-action"}
+    finally:
+        conn.close()
+
+
+def _track_ignored_pattern(conn, summary):
+    """Increment ignore count for sender pattern."""
+    # Extract sender from summary (format: "Sender: Subject")
+    sender = summary.split(":")[0].strip() if ":" in summary else summary[:50]
+    row = conn.execute(
+        "SELECT id, ignore_count FROM filter_suggestions WHERE pattern = ? AND status IN ('tracking', 'suggest')",
+        [sender]
+    ).fetchone()
+    if row:
+        new_count = row[1] + 1
+        status = "suggest" if new_count >= 10 else "tracking"
+        conn.execute(
+            "UPDATE filter_suggestions SET ignore_count = ?, status = ?, suggested_at = CASE WHEN ? = 'suggest' THEN datetime('now') ELSE suggested_at END WHERE id = ?",
+            [new_count, status, status, row[0]]
+        )
+    else:
+        conn.execute(
+            "INSERT INTO filter_suggestions (source, pattern, ignore_count, status) VALUES ('gmail', ?, 1, 'tracking')",
+            [sender]
+        )
+    conn.commit()
+
+
+def _record_stat(metric, value=1, details=None):
+    """Record a stat to the stats table."""
+    from datetime import date
+    conn = get_db()
+    try:
+        conn.execute(
+            "INSERT INTO stats (date, metric, value, details) VALUES (?, ?, ?, ?)",
+            [date.today().isoformat(), metric, value, details]
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
 
 if __name__ == "__main__":
     uvicorn.run("server:app", host="127.0.0.1", port=7777, reload=True)

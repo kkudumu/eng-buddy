@@ -35,10 +35,15 @@
     <button class="filter-btn" data-source="jira">JIRA</button>
     <button class="filter-btn" data-source="slack">SLACK</button>
     <button class="filter-btn" data-source="gmail">GMAIL</button>
+    <button class="filter-btn" data-source="calendar">CALENDAR</button>
     <button class="filter-btn approve-all" id="approve-all-btn">APPROVE ALL SAFE</button>
   </nav>
 
   <main id="queue"></main>
+
+<div id="briefing-overlay" class="briefing-overlay" style="display:none;">
+  <div class="briefing-modal" id="briefing-content"></div>
+</div>
 
   <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>

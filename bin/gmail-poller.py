@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
 """
-eng-buddy Gmail Poller
-Checks email-watches.md for tracked threads/senders/subjects.
-On match: updates linked task in task-inbox.md or creates new task entry.
-Appends to today's daily log.
-
-Watch sources:
-  - Proactive: registered by eng-buddy ("watch for reply from X about Y")
-  - Thread-based: registered from pasted email (matched by thread ID)
+eng-buddy Gmail Poller (smart rewrite)
+Scans ALL inbox emails from last 3 days via Gmail OAuth.
+Claude CLI classifies each email: action-needed, alert, or noise.
+Writes classified cards to inbox.db with draft responses and context notes.
+Tracks ignored senders for adaptive filter suggestions.
+Injects brain context and parses learning from Claude responses.
 """
 
 import json
@@ -15,31 +13,38 @@ import re
 import sqlite3
 import sys
 import time
-import base64
 import subprocess
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timezone
 from pathlib import Path
 from email.utils import parseaddr
 import urllib.request
 import urllib.parse
 import urllib.error
 
+# --- brain import ---
+sys.path.insert(0, str(Path(__file__).parent))
+import brain
+
 # --- Config ---
-CREDS_FILE   = Path.home() / ".gmail-mcp" / "credentials.json"
-OAUTH_FILE   = Path.home() / ".gmail-mcp" / "gcp-oauth.keys.json"
-BASE_DIR     = Path.home() / ".claude" / "eng-buddy"
-STATE_FILE   = BASE_DIR / "gmail-poller-state.json"
-WATCHES_FILE = BASE_DIR / "email-watches.md"
-TASK_INBOX   = BASE_DIR / "task-inbox.md"
-TOKEN_URL    = "https://oauth2.googleapis.com/token"
-GMAIL_BASE   = "https://gmail.googleapis.com/gmail/v1/users/me"
+CREDS_FILE = Path.home() / ".gmail-mcp" / "credentials.json"
+OAUTH_FILE = Path.home() / ".gmail-mcp" / "gcp-oauth.keys.json"
+BASE_DIR   = Path.home() / ".claude" / "eng-buddy"
+STATE_FILE = BASE_DIR / "gmail-poller-state.json"
+DB_PATH    = BASE_DIR / "inbox.db"
+TOKEN_URL  = "https://oauth2.googleapis.com/token"
+GMAIL_BASE = "https://gmail.googleapis.com/gmail/v1/users/me"
+
+# How many noise hits before we surface a filter suggestion
+FILTER_SUGGEST_THRESHOLD = 10
 
 
-# --- OAuth helpers ---
+# ---------------------------------------------------------------------------
+# OAuth helpers (unchanged)
+# ---------------------------------------------------------------------------
 
 def load_credentials():
-    creds = json.loads(CREDS_FILE.read_text())
-    oauth = json.loads(OAUTH_FILE.read_text())
+    creds  = json.loads(CREDS_FILE.read_text())
+    oauth  = json.loads(OAUTH_FILE.read_text())
     client = oauth["installed"]
     return creds, client
 
@@ -68,7 +73,9 @@ def get_token():
     return creds["access_token"]
 
 
-# --- Gmail API ---
+# ---------------------------------------------------------------------------
+# Gmail API helpers (unchanged)
+# ---------------------------------------------------------------------------
 
 def gmail_get(path, params=None, token=None):
     url = f"{GMAIL_BASE}/{path}"
@@ -80,7 +87,6 @@ def gmail_get(path, params=None, token=None):
             return json.loads(resp.read())
     except urllib.error.HTTPError as e:
         if e.code == 401:
-            # Token expired mid-run, refresh and retry once
             token = get_token()
             req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
             with urllib.request.urlopen(req, timeout=15) as resp:
@@ -89,14 +95,11 @@ def gmail_get(path, params=None, token=None):
 
 
 def get_message(msg_id, token):
-    return gmail_get(f"messages/{msg_id}", {"format": "metadata",
-        "metadataHeaders": "From,To,Subject,Date"}, token=token)
-
-
-def get_message_body(msg_id, token):
-    """Get snippet only — enough for task context without loading full body."""
-    msg = gmail_get(f"messages/{msg_id}", {"format": "full"}, token=token)
-    return msg.get("snippet", "")
+    return gmail_get(
+        f"messages/{msg_id}",
+        {"format": "metadata", "metadataHeaders": "From,To,Subject,Date"},
+        token=token,
+    )
 
 
 def extract_header(msg, name):
@@ -107,93 +110,9 @@ def extract_header(msg, name):
     return ""
 
 
-# --- Watch file parser ---
-
-def parse_watches():
-    """
-    Parse email-watches.md into list of watch dicts.
-
-    Watch block format:
-    ## Watch: <title>
-    - From: <pattern>          # optional, supports * wildcard and comma-separated
-    - Subject contains: <kw>   # optional, comma-separated keywords (OR logic)
-    - Thread ID: <id>           # optional, exact Gmail thread ID (highest priority match)
-    - Task: #<N>               # optional, task number to update
-    - Action: update|create    # update = append to task notes, create = new task-inbox entry
-    - Added: <date>
-    """
-    if not WATCHES_FILE.exists():
-        return []
-
-    watches = []
-    current = {}
-    for line in WATCHES_FILE.read_text().splitlines():
-        if line.startswith("## Watch:"):
-            if current.get("title"):
-                watches.append(current)
-            current = {"title": line[9:].strip(), "action": "update"}
-        elif line.startswith("- From:"):
-            current["from"] = line[7:].strip()
-        elif line.startswith("- Subject contains:"):
-            current["subject_kws"] = [k.strip() for k in line[19:].strip().split(",")]
-        elif line.startswith("- Thread ID:"):
-            current["thread_id"] = line[12:].strip()
-        elif line.startswith("- Task:"):
-            current["task"] = line[7:].strip()
-        elif line.startswith("- Action:"):
-            current["action"] = line[9:].strip()
-        elif line.startswith("- Added:"):
-            current["added"] = line[8:].strip()
-        elif line.startswith("- Snoozed until:"):
-            current["snoozed_until"] = line[16:].strip()
-
-    if current.get("title"):
-        watches.append(current)
-    return watches
-
-
-def match_watch(watch, msg_from, msg_subject, msg_thread_id):
-    """Return True if the message matches this watch."""
-
-    # Snoozed watches are skipped
-    if "snoozed_until" in watch:
-        try:
-            snooze_date = datetime.strptime(watch["snoozed_until"], "%Y-%m-%d").date()
-            if date.today() <= snooze_date:
-                return False
-        except ValueError:
-            pass
-
-    # Thread ID match — most precise
-    if watch.get("thread_id"):
-        return msg_thread_id == watch["thread_id"]
-
-    matched_from = True
-    matched_subject = True
-
-    # From pattern match (supports * wildcard and comma-separated options)
-    if watch.get("from"):
-        patterns = [p.strip() for p in watch["from"].split(",")]
-        matched_from = any(
-            re.search(p.replace("*", ".*"), msg_from, re.IGNORECASE)
-            for p in patterns
-        )
-
-    # Subject keyword match (OR logic)
-    if watch.get("subject_kws"):
-        matched_subject = any(
-            kw.lower() in msg_subject.lower()
-            for kw in watch["subject_kws"]
-        )
-
-    # Need at least one matcher defined
-    if not watch.get("from") and not watch.get("subject_kws"):
-        return False
-
-    return matched_from and matched_subject
-
-
-# --- State ---
+# ---------------------------------------------------------------------------
+# State
+# ---------------------------------------------------------------------------
 
 def load_state():
     if STATE_FILE.exists():
@@ -205,7 +124,9 @@ def save_state(state):
     STATE_FILE.write_text(json.dumps(state, indent=2))
 
 
-# --- Output helpers ---
+# ---------------------------------------------------------------------------
+# Output helpers
+# ---------------------------------------------------------------------------
 
 def get_daily_log_path():
     return BASE_DIR / "daily" / f"{date.today().strftime('%Y-%m-%d')}.md"
@@ -216,126 +137,217 @@ def append_to_daily_log(content):
     if not log_path.exists():
         return
     existing = log_path.read_text()
-    if "## 📧 Email Updates" not in existing:
+    if "## Email Updates" not in existing:
         with open(log_path, "a") as f:
-            f.write("\n## 📧 Email Updates\n")
+            f.write("\n## Email Updates\n")
     with open(log_path, "a") as f:
         f.write(content)
 
 
-def append_to_task_inbox(sender, subject, snippet, watch, msg_id, dt_str):
-    existing = TASK_INBOX.read_text() if TASK_INBOX.exists() else ""
-    if msg_id in existing:
-        return  # already logged
-
-    task_ref = watch.get("task", "")
-    action   = watch.get("action", "update")
-    watch_title = watch.get("title", "Email")
-
-    with open(TASK_INBOX, "a") as f:
-        if not existing:
-            f.write("# Slack & Email Task Inbox\n\n")
-            f.write("*Potential tasks detected. Review with eng-buddy.*\n\n")
-        f.write(f"## [ ] 📧 {sender} — {dt_str}\n")
-        f.write(f"**Watch**: {watch_title}\n")
-        if task_ref:
-            f.write(f"**Linked task**: {task_ref} ({action})\n")
-        f.write(f"**Subject**: {subject}\n")
-        f.write(f"**Preview**: {snippet[:300]}\n")
-        f.write(f"<!-- msg:{msg_id} -->\n\n")
-
-
-def write_to_inbox_db(sender, subject, snippet, watch, classification="needs-response"):
-    """Write a card to inbox.db for the dashboard."""
-    from datetime import timezone
-    db = BASE_DIR / "inbox.db"
-    if not db.exists():
-        return
-    proposed_actions = json.dumps([{
-        "type": "reply_to_email",
-        "draft": f"Review and respond to email from {sender}: {subject}",
-        "source": "gmail",
-        "watch": watch.get("title", ""),
-    }])
-    conn = sqlite3.connect(db)
-    conn.execute(
-        """INSERT INTO cards
-           (source, timestamp, summary, classification, status, proposed_actions, execution_status)
-           VALUES ('gmail', ?, ?, ?, 'pending', ?, 'not_run')""",
-        (datetime.now(timezone.utc).isoformat(),
-         f"{sender}: {subject}",
-         classification,
-         proposed_actions)
-    )
-    conn.commit()
-    conn.close()
-
-
-# --- Notifications ---
+# ---------------------------------------------------------------------------
+# Notifications
+# ---------------------------------------------------------------------------
 
 def notify(title, message):
-    """
-    Fire two notifications:
-    1. Banner to notification center (with sound)
-    2. Persistent alert dialog (stays until dismissed)
-    """
-    # Banner — goes to notification center, plays sound
+    """Fire a banner notification and a persistent alert dialog."""
     banner_script = f'display notification "{message}" with title "{title}" sound name "Glass"'
     subprocess.run(["osascript", "-e", banner_script])
 
-    # Persistent alert — detached so poller isn't blocked, stays on screen until OK clicked
     alert_script = f'display alert "{title}" message "{message}" buttons {{"OK"}} default button "OK"'
     subprocess.Popen(["osascript", "-e", alert_script])
 
 
-# --- Main ---
+# ---------------------------------------------------------------------------
+# Database helpers
+# ---------------------------------------------------------------------------
+
+def db_connect():
+    if not DB_PATH.exists():
+        return None
+    return sqlite3.connect(DB_PATH)
+
+
+def write_card_to_db(conn, item, classification_result):
+    """Insert one classified email card into inbox.db."""
+    if conn is None:
+        return
+
+    section        = classification_result.get("section", "noise")
+    classification = classification_result.get("classification", "unknown")
+    draft_response = classification_result.get("draft_response")
+    context_notes  = classification_result.get("context_notes")
+
+    proposed_actions = json.dumps([{
+        "type":      "reply_to_email",
+        "draft":     draft_response or f"Review and respond to email from {item['from']}: {item['subject']}",
+        "source":    "gmail",
+        "thread_id": item.get("thread_id", ""),
+        "to_email":  item.get("sender_email", ""),
+        "subject":   item.get("subject", ""),
+    }])
+
+    conn.execute(
+        """INSERT INTO cards
+           (source, timestamp, summary, classification, section, draft_response,
+            context_notes, status, proposed_actions, execution_status)
+           VALUES ('gmail', ?, ?, ?, ?, ?, ?, 'pending', ?, 'not_run')""",
+        (
+            datetime.now(timezone.utc).isoformat(),
+            f"{item['from']}: {item['subject']}",
+            classification,
+            section,
+            draft_response,
+            context_notes,
+            proposed_actions,
+        ),
+    )
+
+
+def update_filter_suggestions(conn, noise_items):
+    """
+    For each noise-classified item, increment ignore_count for the sender pattern.
+    When ignore_count reaches FILTER_SUGGEST_THRESHOLD, mark as ready to suggest.
+    """
+    if conn is None or not noise_items:
+        return
+
+    for item in noise_items:
+        # Derive a pattern: strip subaddressing and use the domain+local part
+        sender_email = item.get("sender_email", "")
+        if not sender_email:
+            continue
+
+        # Build a coarse pattern: local@domain (no subaddress)
+        local, _, domain = sender_email.partition("@")
+        local_clean = re.sub(r"\+.*", "", local)  # strip +tag
+        pattern = f"{local_clean}@{domain}".lower() if domain else sender_email.lower()
+
+        row = conn.execute(
+            "SELECT id, ignore_count FROM filter_suggestions WHERE source='gmail' AND pattern=?",
+            (pattern,),
+        ).fetchone()
+
+        if row:
+            row_id, count = row
+            new_count = count + 1
+            if new_count >= FILTER_SUGGEST_THRESHOLD:
+                conn.execute(
+                    """UPDATE filter_suggestions
+                       SET ignore_count=?, suggested_at=?, status='suggest'
+                       WHERE id=?""",
+                    (new_count, datetime.now(timezone.utc).isoformat(), row_id),
+                )
+            else:
+                conn.execute(
+                    "UPDATE filter_suggestions SET ignore_count=? WHERE id=?",
+                    (new_count, row_id),
+                )
+        else:
+            conn.execute(
+                "INSERT INTO filter_suggestions (source, pattern, ignore_count, status) VALUES ('gmail', ?, 1, 'tracking')",
+                (pattern,),
+            )
+
+
+# ---------------------------------------------------------------------------
+# Claude CLI classification
+# ---------------------------------------------------------------------------
+
+def classify_with_claude(batch_items):
+    """
+    Send batch_items to Claude CLI for classification.
+    Returns list of dicts: {id, section, classification, draft_response, context_notes}
+    Falls back to empty list on any error.
+    """
+    if not batch_items:
+        return []
+
+    context_prompt = brain.build_context_prompt(batch_items)
+
+    prompt = f"""{context_prompt}
+
+Classify each email below as:
+- section: "action-needed", "alert", or "noise"
+- classification: more specific label (e.g., "needs-response", "offboarding-fyi", "security-alert", "marketing-spam")
+- draft_response: For action-needed emails that need a reply, draft one. null otherwise.
+- context_notes: Brief context. For alerts, a one-line summary. null for noise.
+
+Emails:
+{json.dumps(batch_items, indent=2)}
+
+Return ONLY a JSON array. No prose."""
+
+    try:
+        result = subprocess.run(
+            ["claude", "--dangerously-skip-permissions", "--print", prompt],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        output = result.stdout.strip()
+
+        # Parse learning sections from the full response before extracting JSON
+        brain.parse_learning(output)
+
+        # Extract the JSON array — Claude should return only JSON, but strip any
+        # markdown fences or surrounding text just in case.
+        json_match = re.search(r"\[.*\]", output, re.DOTALL)
+        if json_match:
+            return json.loads(json_match.group(0))
+
+        print(f"[{datetime.now().strftime('%H:%M')}] Claude returned no parseable JSON array")
+        return []
+
+    except subprocess.TimeoutExpired:
+        print(f"[{datetime.now().strftime('%H:%M')}] Claude CLI timed out during classification")
+        return []
+    except (json.JSONDecodeError, ValueError) as exc:
+        print(f"[{datetime.now().strftime('%H:%M')}] JSON parse error from Claude: {exc}")
+        return []
+    except Exception as exc:
+        print(f"[{datetime.now().strftime('%H:%M')}] Claude CLI error: {exc}")
+        return []
+
+
+def build_classification_map(results, batch_items):
+    """
+    Map Claude results back to batch items by index or by id field.
+    Returns dict keyed by msg_id.
+    """
+    id_map = {}
+    for i, res in enumerate(results):
+        # Claude may return an 'id' field or results in order
+        msg_id = res.get("id")
+        if not msg_id and i < len(batch_items):
+            msg_id = batch_items[i].get("id")
+        if msg_id:
+            id_map[msg_id] = res
+    return id_map
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 
 def main():
-    state   = load_state()
-    token   = get_token()
-    watches = parse_watches()
-
-    if not watches:
-        print(f"[{datetime.now().strftime('%H:%M')}] No watches configured. Add entries to email-watches.md")
-        return
-
-    # Use last-check timestamp or default to 1 hour ago
-    last_check_ts = state.get("last_check_ts")
-    if last_check_ts:
-        after_epoch = int(last_check_ts)
-    else:
-        after_epoch = int((datetime.now() - timedelta(hours=1)).timestamp())
-
-    now_ts = int(datetime.now().timestamp())
+    state        = load_state()
+    token        = get_token()
     already_seen = set(state.get("seen_msg_ids", []))
     new_seen     = set()
-    matches_found = []
 
-    # Build Gmail search query — combines all watches
-    query_parts = []
-    for w in watches:
-        if w.get("thread_id"):
-            query_parts.append(f"thread:{w['thread_id']}")
-        elif w.get("from"):
-            froms = [f.strip() for f in w["from"].split(",")]
-            for f in froms:
-                clean = f.replace("*", "").strip()
-                if clean:
-                    query_parts.append(f"from:{clean}")
-        elif w.get("subject_kws"):
-            for kw in w["subject_kws"]:
-                query_parts.append(f"subject:{kw}")
-
-    if not query_parts:
-        print(f"[{datetime.now().strftime('%H:%M')}] Watches have no queryable fields")
-        return
-
-    # De-dupe and run search
-    query = f"({' OR '.join(set(query_parts))}) after:{after_epoch} in:inbox"
-
-    result = gmail_get("messages", {"q": query, "maxResults": 30}, token=token)
+    # Scan all inbox emails from last 3 days
+    query = "in:inbox newer_than:3d"
+    result = gmail_get("messages", {"q": query, "maxResults": 50}, token=token)
     messages = result.get("messages", [])
 
+    if not messages:
+        print(f"[{datetime.now().strftime('%H:%M')}] No inbox emails in last 3 days")
+        state["last_check_ts"] = int(datetime.now().timestamp())
+        save_state(state)
+        return
+
+    # Fetch metadata for unseen messages only
+    batch_items = []
     for msg_ref in messages:
         msg_id = msg_ref["id"]
         if msg_id in already_seen:
@@ -343,56 +355,139 @@ def main():
 
         new_seen.add(msg_id)
 
-        msg = get_message(msg_id, token)
+        try:
+            msg = get_message(msg_id, token)
+        except Exception as exc:
+            print(f"[{datetime.now().strftime('%H:%M')}] Failed to fetch {msg_id}: {exc}")
+            continue
+
         msg_from    = extract_header(msg, "From")
+        msg_to      = extract_header(msg, "To")
         msg_subject = extract_header(msg, "Subject")
-        msg_date    = extract_header(msg, "Date")
         msg_thread  = msg.get("threadId", "")
         snippet     = msg.get("snippet", "")
+        labels      = msg.get("labelIds", [])
         _, sender_email = parseaddr(msg_from)
 
-        dt_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+        batch_items.append({
+            "id":           msg_id,
+            "from":         msg_from,
+            "sender_email": sender_email,
+            "to":           msg_to,
+            "subject":      msg_subject,
+            "snippet":      snippet[:500],
+            "labels":       labels,
+            "thread_id":    msg_thread,
+        })
 
-        # Match against all watches
-        for watch in watches:
-            if match_watch(watch, msg_from, msg_subject, msg_thread):
-                matches_found.append({
-                    "watch":   watch["title"],
-                    "task":    watch.get("task", ""),
-                    "action":  watch.get("action", "update"),
-                    "from":    msg_from,
-                    "subject": msg_subject,
-                    "snippet": snippet,
-                    "msg_id":  msg_id,
-                    "dt":      dt_str,
-                })
-                append_to_task_inbox(msg_from, msg_subject, snippet, watch, msg_id, dt_str)
-                write_to_inbox_db(msg_from, msg_subject, snippet, watch)
-                _, sender_name = parseaddr(msg_from)
-                notify(
-                    title=f"eng-buddy: {watch['title']}",
-                    message=f"From: {sender_name or msg_from}\n{msg_subject[:80]}",
-                )
-                break  # one watch match per message is enough
+        time.sleep(0.15)  # gentle rate limiting
 
-        time.sleep(0.2)
+    if not batch_items:
+        print(f"[{datetime.now().strftime('%H:%M')}] No new emails (all already seen)")
+        state["last_check_ts"] = int(datetime.now().timestamp())
+        state["seen_msg_ids"]  = list((already_seen | new_seen))[-500:]
+        save_state(state)
+        return
+
+    print(f"[{datetime.now().strftime('%H:%M')}] Classifying {len(batch_items)} new email(s) via Claude...")
+
+    # Classify via Claude CLI
+    classification_results = classify_with_claude(batch_items)
+    classification_map     = build_classification_map(classification_results, batch_items)
+
+    # Write to DB and collect metrics
+    conn = db_connect()
+    action_needed = []
+    alerts        = []
+    noise_items   = []
+
+    if conn:
+        for item in batch_items:
+            msg_id   = item["id"]
+            cl_result = classification_map.get(msg_id, {
+                "section":        "noise",
+                "classification": "unclassified",
+                "draft_response": None,
+                "context_notes":  None,
+            })
+
+            write_card_to_db(conn, item, cl_result)
+
+            section = cl_result.get("section", "noise")
+            if section == "action-needed":
+                action_needed.append((item, cl_result))
+            elif section == "alert":
+                alerts.append((item, cl_result))
+            else:
+                noise_items.append(item)
+
+        # Update adaptive filter suggestions for noise senders
+        update_filter_suggestions(conn, noise_items)
+        conn.commit()
+        conn.close()
+    else:
+        print(f"[{datetime.now().strftime('%H:%M')}] inbox.db not found — skipping DB writes")
+        # Still categorize for logging/notifications
+        for item in batch_items:
+            msg_id    = item["id"]
+            cl_result = classification_map.get(msg_id, {"section": "noise"})
+            section   = cl_result.get("section", "noise")
+            if section == "action-needed":
+                action_needed.append((item, cl_result))
+            elif section == "alert":
+                alerts.append((item, cl_result))
+            else:
+                noise_items.append(item)
+
+    # Notifications for action-needed emails
+    for item, cl_result in action_needed:
+        _, display_name = parseaddr(item["from"])
+        notify(
+            title=f"eng-buddy: Action needed",
+            message=f"From: {display_name or item['from']}\n{item['subject'][:80]}",
+        )
+
+    # Notifications for alerts (single batch notification if multiple)
+    if alerts:
+        if len(alerts) == 1:
+            item, cl_result = alerts[0]
+            _, display_name = parseaddr(item["from"])
+            notify(
+                title="eng-buddy: Alert",
+                message=f"From: {display_name or item['from']}\n{item['subject'][:80]}",
+            )
+        else:
+            notify(
+                title="eng-buddy: Alerts",
+                message=f"{len(alerts)} alert email(s) in your inbox",
+            )
 
     # Write to daily log
-    if matches_found:
-        check_time = datetime.now().strftime("%H:%M")
-        lines = [f"\n### Email check {check_time} — {len(matches_found)} matched\n"]
-        for m in matches_found:
-            task_ref = f" → {m['task']}" if m["task"] else ""
-            lines.append(f"- 📧 **{m['watch']}**{task_ref} [{m['dt']}] **{m['from']}**: {m['subject']}\n")
-            lines.append(f"  _{m['snippet'][:200]}_\n")
-        append_to_daily_log("".join(lines))
-        print(f"[{datetime.now().strftime('%H:%M')}] {len(matches_found)} email match(es) logged")
-    else:
-        print(f"[{datetime.now().strftime('%H:%M')}] No watched emails")
+    total = len(batch_items)
+    check_time = datetime.now().strftime("%H:%M")
+    log_lines  = [f"\n### Email check {check_time} — {total} new ({len(action_needed)} action, {len(alerts)} alert, {len(noise_items)} noise)\n"]
+
+    for item, cl_result in action_needed:
+        classification = cl_result.get("classification", "needs-response")
+        log_lines.append(f"- ACTION [{classification}] **{item['from']}**: {item['subject']}\n")
+        if cl_result.get("context_notes"):
+            log_lines.append(f"  _{cl_result['context_notes']}_\n")
+
+    for item, cl_result in alerts:
+        classification = cl_result.get("classification", "alert")
+        log_lines.append(f"- ALERT [{classification}] **{item['from']}**: {item['subject']}\n")
+        if cl_result.get("context_notes"):
+            log_lines.append(f"  _{cl_result['context_notes']}_\n")
+
+    append_to_daily_log("".join(log_lines))
+
+    # Console summary
+    print(f"[{datetime.now().strftime('%H:%M')}] {total} email(s): "
+          f"{len(action_needed)} action-needed, {len(alerts)} alert, {len(noise_items)} noise")
 
     # Update state
-    state["last_check_ts"] = now_ts
-    state["seen_msg_ids"]  = list((already_seen | new_seen))[-500:]  # cap at 500
+    state["last_check_ts"] = int(datetime.now().timestamp())
+    state["seen_msg_ids"]  = list((already_seen | new_seen))[-500:]
     save_state(state)
 
 
