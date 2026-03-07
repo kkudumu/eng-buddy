@@ -7,6 +7,9 @@ export ENG_BUDDY_TERMINAL="${ENG_BUDDY_TERMINAL:-Warp}"
 # Set your Jira email for sprint board (leave empty to use currentUser())
 export ENG_BUDDY_JIRA_USER="${ENG_BUDDY_JIRA_USER:-kioja.kudumu@klaviyo.com}"
 
+# Set your Jira board name to find the correct sprint (substring match)
+export ENG_BUDDY_JIRA_BOARD="${ENG_BUDDY_JIRA_BOARD:-Systems}"
+
 source venv/bin/activate 2>/dev/null || python3 -m venv venv && source venv/bin/activate
 pip install -q -r requirements.txt
 

@@ -22,6 +22,7 @@ DB_PATH = Path.home() / ".claude" / "eng-buddy" / "inbox.db"
 STATIC_DIR = Path(__file__).parent / "static"
 TERMINAL_APP = os.environ.get("ENG_BUDDY_TERMINAL", "Terminal")
 JIRA_USER = os.environ.get("ENG_BUDDY_JIRA_USER", "")
+JIRA_BOARD = os.environ.get("ENG_BUDDY_JIRA_BOARD", "Systems")
 
 # In-memory cache for Jira sprint data
 _jira_cache = {"data": None, "fetched_at": 0}
@@ -515,17 +516,18 @@ async def jira_sprint(refresh: bool = False):
     if not refresh and _jira_cache["data"] and (time.time() - _jira_cache["fetched_at"]) < 120:
         return _jira_cache["data"]
 
-    user_clause = f'assignee = "{JIRA_USER}" AND ' if JIRA_USER else "assignee = currentUser() AND "
-    jql = f'{user_clause}sprint in openSprints() ORDER BY priority DESC, status ASC'
+    user_clause = f'assignee = "{JIRA_USER}"' if JIRA_USER else "assignee = currentUser()"
 
     prompt = (
-        f"Use the Atlassian MCP jira_search tool with this JQL: {jql}\n"
-        f"Fields: summary,status,priority,issuetype,labels,updated\n"
-        f"Limit: 30\n"
+        f"Use the Atlassian MCP tools to find my current sprint tasks:\n"
+        f"1. Call jira_get_agile_boards to find the board with '{JIRA_BOARD}' in its name.\n"
+        f"2. Call jira_get_sprints_from_board with that board's ID, state='active' to get the current sprint.\n"
+        f"3. Call jira_search with JQL: {user_clause} AND sprint = <sprint_id> ORDER BY priority DESC, status ASC\n"
+        f"   Fields: summary,status,priority,issuetype,labels,updated. Limit: 30.\n"
         f"Return ONLY a JSON array of objects with keys: "
         f"key, summary, status (string), status_category (To Do/In Progress/Done), "
         f"priority, issue_type, labels (array), updated. "
-        f"No prose, just the JSON array."
+        f"No prose, just the JSON array. Empty array [] if no issues found."
     )
 
     try:
