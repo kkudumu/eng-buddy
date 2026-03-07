@@ -150,10 +150,12 @@ def append_to_daily_log(content):
 
 def notify(title, message):
     """Fire a banner notification and a persistent alert dialog."""
-    banner_script = f'display notification "{message}" with title "{title}" sound name "Glass"'
+    safe_title = str(title).replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ").replace("\r", " ")
+    safe_message = str(message).replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ").replace("\r", " ")
+    banner_script = f'display notification "{safe_message}" with title "{safe_title}" sound name "Glass"'
     subprocess.run(["osascript", "-e", banner_script])
 
-    alert_script = f'display alert "{title}" message "{message}" buttons {{"OK"}} default button "OK"'
+    alert_script = f'display alert "{safe_title}" message "{safe_message}" buttons {{"OK"}} default button "OK"'
     subprocess.Popen(["osascript", "-e", alert_script])
 
 

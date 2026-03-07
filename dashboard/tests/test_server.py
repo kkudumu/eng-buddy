@@ -213,6 +213,34 @@ def test_migration_idempotent():
     migrate()
 
 
+def test_migration_bootstraps_fresh_db(tmp_path):
+    """Verify migrate.py creates a usable cards table on a fresh DB path."""
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).parent.parent))
+    import migrate as migrate_mod
+
+    original_db_path = migrate_mod.DB_PATH
+    test_db = tmp_path / "fresh-inbox.db"
+    migrate_mod.DB_PATH = test_db
+    try:
+        migrate_mod.migrate()
+        conn = sqlite3.connect(test_db)
+        try:
+            table_row = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'cards'"
+            ).fetchone()
+            assert table_row is not None
+            cols = conn.execute("PRAGMA table_info(cards)").fetchall()
+            col_names = {c[1] for c in cols}
+            assert "section" in col_names
+            assert "draft_response" in col_names
+            assert "context_notes" in col_names
+        finally:
+            conn.close()
+    finally:
+        migrate_mod.DB_PATH = original_db_path
+
+
 @pytest.mark.asyncio
 async def test_briefing_caching():
     """Verify briefing endpoint returns data and caches it."""

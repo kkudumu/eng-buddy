@@ -26,6 +26,11 @@ JIRA_USER = os.environ.get("ENG_BUDDY_JIRA_USER", "")
 # In-memory cache for Jira sprint data
 _jira_cache = {"data": None, "fetched_at": 0}
 
+
+def _escape_applescript_text(value: str) -> str:
+    return str(value).replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ").replace("\r", " ")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     STATIC_DIR.mkdir(exist_ok=True)
@@ -144,6 +149,8 @@ async def send_slack_draft(card_id: int):
         ["claude", "--dangerously-skip-permissions", "--print", prompt],
         capture_output=True, text=True, timeout=30
     )
+    if result.returncode != 0:
+        raise HTTPException(502, f"slack send failed: {result.stderr[:200]}")
 
     conn = get_db()
     conn.execute(
@@ -193,6 +200,8 @@ async def send_email_draft(card_id: int):
         ["claude", "--dangerously-skip-permissions", "--print", prompt],
         capture_output=True, text=True, timeout=30
     )
+    if result.returncode != 0:
+        raise HTTPException(502, f"email send failed: {result.stderr[:200]}")
 
     conn = get_db()
     conn.execute(
@@ -623,8 +632,8 @@ async def search_decisions(q: str = "", source: str = None, action: str = None, 
 
 @app.post("/api/notify")
 async def notify(body: dict):
-    msg = body.get("message", "")[:100]
-    title = body.get("title", "eng-buddy")
+    msg = _escape_applescript_text(body.get("message", "")[:100])
+    title = _escape_applescript_text(body.get("title", "eng-buddy"))
     script = f'display notification "{msg}" with title "{title}" sound name "Glass"'
     subprocess.Popen(["osascript", "-e", script])
     return {"ok": True}
@@ -752,6 +761,8 @@ async def create_gmail_filter(body: dict):
         ["claude", "--dangerously-skip-permissions", "--print", prompt],
         capture_output=True, text=True, timeout=30
     )
+    if result.returncode != 0:
+        raise HTTPException(502, f"filter creation failed: {result.stderr[:200]}")
 
     if suggestion_id:
         conn = get_db()

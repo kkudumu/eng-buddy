@@ -44,6 +44,17 @@ function escHtml(str) {
     .replace(/>/g, '&gt;');
 }
 
+function safeExternalUrl(url) {
+  if (!url) return '';
+  try {
+    const parsed = new URL(String(url), window.location.origin);
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+      return parsed.href;
+    }
+  } catch (_) {}
+  return '';
+}
+
 // -- Card rendering -----------------------------------------------------------
 
 function renderCard(card) {
@@ -111,10 +122,10 @@ function renderSmartCard(card, source) {
 
   let buttons = '';
   if (hasDraft && isSlack) {
-    buttons += `<button class="action-btn approve" onclick="sendDraft(${card.id}, 'slack')">SEND DRAFT</button>`;
+    buttons += `<button class="action-btn approve" onclick="sendDraft(${card.id}, 'slack', this)">SEND DRAFT</button>`;
   }
   if (hasDraft && isGmail) {
-    buttons += `<button class="action-btn approve" onclick="sendDraft(${card.id}, 'email')">SEND DRAFT</button>`;
+    buttons += `<button class="action-btn approve" onclick="sendDraft(${card.id}, 'email', this)">SEND DRAFT</button>`;
   }
   buttons += `<button class="action-btn refine" onclick="toggleRefine(${card.id})">REFINE</button>`;
   buttons += `<button class="action-btn" onclick="dismissCard(${card.id})">DISMISS</button>`;
@@ -159,26 +170,50 @@ async function loadTwoSectionView(source) {
   const queue = document.getElementById('queue');
   queue.innerHTML = '<div style="color:#666;padding:40px;text-align:center;letter-spacing:4px">LOADING...</div>';
 
-  const [needsR, noActionR, suggestionsR] = await Promise.all([
-    fetch(`/api/cards?source=${source}&section=needs-action`),
-    fetch(`/api/cards?source=${source}&section=no-action`),
-    source === 'gmail' ? fetch('/api/filters/suggestions') : Promise.resolve(null),
-  ]);
+  let needsCards = [];
+  let noActionCards = [];
+  let suggestions = { suggestions: [] };
 
-  const needs = await needsR.json();
-  const noAction = await noActionR.json();
-  const suggestions = suggestionsR ? await suggestionsR.json() : {suggestions: []};
+  if (source === 'gmail') {
+    const [actionR, alertR, noiseR, noActionR, suggestionsR] = await Promise.all([
+      fetch('/api/cards?source=gmail&section=action-needed'),
+      fetch('/api/cards?source=gmail&section=alert'),
+      fetch('/api/cards?source=gmail&section=noise'),
+      fetch('/api/cards?source=gmail&section=no-action'),
+      fetch('/api/filters/suggestions'),
+    ]);
 
-  // Gmail uses "action-needed" section name
-  let needsCards = needs.cards;
-  if (source === 'gmail' && needsCards.length === 0) {
-    const altR = await fetch(`/api/cards?source=${source}&section=action-needed`);
-    const altData = await altR.json();
-    needsCards = altData.cards;
+    const actionData = await actionR.json();
+    const alertData = await alertR.json();
+    const noiseData = await noiseR.json();
+    const noActionData = await noActionR.json();
+    suggestions = await suggestionsR.json();
+
+    needsCards = actionData.cards || [];
+    const mergedNoAction = [
+      ...(noActionData.cards || []),
+      ...(alertData.cards || []),
+      ...(noiseData.cards || []),
+    ];
+    const seen = new Set();
+    noActionCards = mergedNoAction.filter((card) => {
+      if (!card || seen.has(card.id)) return false;
+      seen.add(card.id);
+      return true;
+    });
+  } else {
+    const [needsR, noActionR] = await Promise.all([
+      fetch(`/api/cards?source=${source}&section=needs-action`),
+      fetch(`/api/cards?source=${source}&section=no-action`),
+    ]);
+    const needsData = await needsR.json();
+    const noActionData = await noActionR.json();
+    needsCards = needsData.cards || [];
+    noActionCards = noActionData.cards || [];
   }
 
   const needsHtml = needsCards.map(c => renderSmartCard(c, source)).join('') || '<div class="section-empty">All clear</div>';
-  const noActionHtml = noAction.cards.map(c => renderSmartCard(c, source)).join('') || '<div class="section-empty">Nothing here</div>';
+  const noActionHtml = noActionCards.map(c => renderSmartCard(c, source)).join('') || '<div class="section-empty">Nothing here</div>';
 
   let suggestionsHtml = '';
   if (suggestions.suggestions.length) {
@@ -202,7 +237,7 @@ async function loadTwoSectionView(source) {
     <div class="section-group">
       <div class="section-header no-action" onclick="toggleSection('noaction')">
         <span>RESPONDED / NO ACTION</span>
-        <span class="section-count">${noAction.cards.length}</span>
+        <span class="section-count">${noActionCards.length}</span>
         <span class="section-toggle" id="toggle-noaction">&#9660;</span>
       </div>
       <div class="section-body" id="section-noaction">${noActionHtml}</div>
@@ -242,7 +277,7 @@ async function loadCalendarView() {
       const actions = Array.isArray(card.proposed_actions) ? card.proposed_actions : [];
       const event = actions[0] || {};
       const context = card.context_notes ? escHtml(card.context_notes) : '';
-      const meetLink = event.hangout_link || '';
+      const meetLink = safeExternalUrl(event.hangout_link || '');
       const attendees = (event.attendees || []).slice(0, 5).map(a => escHtml(a)).join(', ');
       const isHighPrio = card.classification === 'high';
 
@@ -267,11 +302,12 @@ async function loadCalendarView() {
 // -- Filter suggestions -------------------------------------------------------
 
 function renderFilterSuggestion(suggestion) {
+  const encodedPattern = encodeURIComponent(String(suggestion.pattern || ''));
   return `
     <div class="filter-suggestion">
       <div class="filter-pattern">PATTERN: ${escHtml(suggestion.pattern)} (ignored ${suggestion.ignore_count}x)</div>
       <div class="filter-actions">
-        <button class="action-btn approve" onclick="createFilter(${suggestion.id}, '${escHtml(suggestion.pattern)}', 'eng-buddy/auto-filtered')">CREATE FILTER</button>
+        <button class="action-btn approve" onclick="createFilter(${suggestion.id}, decodeURIComponent('${encodedPattern}'), 'eng-buddy/auto-filtered')">CREATE FILTER</button>
         <button class="action-btn" onclick="dismissFilter(${suggestion.id}, false)">NOT NOW</button>
         <button class="action-btn hold" onclick="dismissFilter(${suggestion.id}, true)">NEVER</button>
       </div>
@@ -280,20 +316,27 @@ function renderFilterSuggestion(suggestion) {
 
 // -- Smart actions ------------------------------------------------------------
 
-async function sendDraft(id, type) {
+async function sendDraft(id, type, btnEl = null) {
   const endpoint = type === 'slack' ? 'send-slack' : 'send-email';
-  const btn = event.target;
-  btn.textContent = 'SENDING...';
-  btn.disabled = true;
+  const btn = btnEl || (typeof event !== 'undefined' ? event.target : null);
+  if (btn) {
+    btn.textContent = 'SENDING...';
+    btn.disabled = true;
+  }
   try {
     const r = await fetch(`/api/cards/${id}/${endpoint}`, { method: 'POST' });
-    const data = await r.json();
-    btn.textContent = 'SENT';
+    if (!r.ok) {
+      const body = await r.text();
+      throw new Error(body || `HTTP ${r.status}`);
+    }
+    if (btn) btn.textContent = 'SENT';
     const card = document.getElementById(`card-${id}`);
     if (card) card.style.opacity = '0.5';
   } catch (e) {
-    btn.textContent = 'FAILED';
-    btn.disabled = false;
+    if (btn) {
+      btn.textContent = 'FAILED';
+      btn.disabled = false;
+    }
   }
 }
 

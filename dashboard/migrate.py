@@ -6,6 +6,25 @@ from pathlib import Path
 DB_PATH = Path.home() / ".claude" / "eng-buddy" / "inbox.db"
 
 MIGRATIONS = [
+    # Base cards table (for fresh installs)
+    """CREATE TABLE IF NOT EXISTS cards (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        source TEXT,
+        timestamp TEXT,
+        summary TEXT,
+        classification TEXT,
+        status TEXT DEFAULT 'pending',
+        proposed_actions TEXT,
+        execution_status TEXT DEFAULT 'not_run',
+        execution_result TEXT,
+        executed_at TEXT,
+        section TEXT DEFAULT 'needs-action',
+        draft_response TEXT,
+        context_notes TEXT,
+        responded INTEGER DEFAULT 0,
+        filter_suggested INTEGER DEFAULT 0,
+        refinement_history TEXT
+    )""",
     # New columns for smart classification
     "ALTER TABLE cards ADD COLUMN section TEXT DEFAULT 'needs-action'",
     "ALTER TABLE cards ADD COLUMN draft_response TEXT",
@@ -77,8 +96,7 @@ MIGRATIONS = [
 
 
 def migrate():
-    if not DB_PATH.exists():
-        return
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     for sql in MIGRATIONS:
         try:
