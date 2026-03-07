@@ -115,6 +115,90 @@ async def test_dismiss_filter_suggestion():
     assert r.status_code == 200
 
 
+# --- Decision log tests ---
+
+
+@pytest.mark.asyncio
+async def test_decision_logged_on_hold():
+    """Verify holding a card creates a decision log entry."""
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r = await client.get("/api/cards")
+        cards = r.json()["cards"]
+        if not cards:
+            pytest.skip("no cards in DB")
+        card_id = cards[0]["id"]
+        await client.post(f"/api/cards/{card_id}/hold")
+
+        # Check decision was logged
+        r2 = await client.get(f"/api/decisions/search?q=&limit=50")
+        decisions = r2.json()["decisions"]
+        held = [d for d in decisions if d["card_id"] == card_id and d["action"] == "held"]
+        assert len(held) >= 1
+
+
+@pytest.mark.asyncio
+async def test_decision_logged_on_dismiss():
+    """Verify dismissing a card creates a decision log entry."""
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        # First restore a card to pending so we can dismiss it
+        r = await client.get("/api/cards?status=held")
+        cards = r.json()["cards"]
+        if not cards:
+            r = await client.get("/api/cards")
+            cards = r.json()["cards"]
+        if not cards:
+            pytest.skip("no cards in DB")
+        card_id = cards[0]["id"]
+        await client.post(f"/api/cards/{card_id}/dismiss")
+
+        r2 = await client.get(f"/api/decisions/search?q=&limit=50")
+        decisions = r2.json()["decisions"]
+        dismissed = [d for d in decisions if d["card_id"] == card_id and d["action"] == "dismissed"]
+        assert len(dismissed) >= 1
+
+
+@pytest.mark.asyncio
+async def test_decision_search_empty_query():
+    """Verify search endpoint works with empty query."""
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r = await client.get("/api/decisions/search")
+    assert r.status_code == 200
+    data = r.json()
+    assert "decisions" in data
+    assert isinstance(data["decisions"], list)
+    assert "total" in data
+
+
+@pytest.mark.asyncio
+async def test_decision_search_with_filters():
+    """Verify search endpoint accepts source and action filters."""
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r = await client.get("/api/decisions/search?source=slack&action=held&limit=5")
+    assert r.status_code == 200
+    data = r.json()
+    for d in data["decisions"]:
+        assert d["source"] == "slack"
+        assert d["action"] == "held"
+
+
+def test_brain_load_decisions():
+    """Verify brain.load_decisions returns list without errors."""
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).parent.parent.parent / "bin"))
+    from brain import load_decisions
+    result = load_decisions("test query", limit=3)
+    assert isinstance(result, list)
+
+
+def test_brain_context_prompt_includes_decisions():
+    """Verify build_context_prompt includes decisions section."""
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).parent.parent.parent / "bin"))
+    from brain import build_context_prompt
+    prompt = build_context_prompt()
+    assert "Similar past decisions" in prompt
+
+
 def test_migration_idempotent():
     """Verify migrate.py can run twice without error."""
     import sys as _sys

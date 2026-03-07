@@ -37,6 +37,42 @@ MIGRATIONS = [
         status TEXT DEFAULT 'tracking',
         filter_id TEXT
     )""",
+    # Decision log
+    """CREATE TABLE IF NOT EXISTS decisions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        card_id INTEGER NOT NULL,
+        action TEXT NOT NULL,
+        source TEXT,
+        summary TEXT,
+        context_notes TEXT,
+        draft_response TEXT,
+        refinement_history TEXT,
+        execution_result TEXT,
+        decision_at TEXT NOT NULL,
+        tags TEXT
+    )""",
+    # FTS5 index for decision search
+    """CREATE VIRTUAL TABLE IF NOT EXISTS decisions_fts USING fts5(
+        summary, context_notes, draft_response, execution_result, tags,
+        content='decisions', content_rowid='id'
+    )""",
+    # Triggers to keep FTS in sync
+    """CREATE TRIGGER IF NOT EXISTS decisions_ai AFTER INSERT ON decisions BEGIN
+        INSERT INTO decisions_fts(rowid, summary, context_notes, draft_response, execution_result, tags)
+        VALUES (new.id, new.summary, new.context_notes, new.draft_response, new.execution_result, new.tags);
+    END""",
+    """CREATE TRIGGER IF NOT EXISTS decisions_ad AFTER DELETE ON decisions BEGIN
+        INSERT INTO decisions_fts(decisions_fts, rowid, summary, context_notes, draft_response, execution_result, tags)
+        VALUES ('delete', old.id, old.summary, old.context_notes, old.draft_response, old.execution_result, old.tags);
+    END""",
+    """CREATE TRIGGER IF NOT EXISTS decisions_au AFTER UPDATE ON decisions BEGIN
+        INSERT INTO decisions_fts(decisions_fts, rowid, summary, context_notes, draft_response, execution_result, tags)
+        VALUES ('delete', old.id, old.summary, old.context_notes, old.draft_response, old.execution_result, old.tags);
+        INSERT INTO decisions_fts(rowid, summary, context_notes, draft_response, execution_result, tags)
+        VALUES (new.id, new.summary, new.context_notes, new.draft_response, new.execution_result, new.tags);
+    END""",
+    # Refinement history on cards
+    "ALTER TABLE cards ADD COLUMN refinement_history TEXT",
 ]
 
 

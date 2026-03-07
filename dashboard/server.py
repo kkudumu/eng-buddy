@@ -87,9 +87,10 @@ async def hold_card(card_id: int):
             "UPDATE cards SET status = 'held' WHERE id = ?", [card_id]
         )
         conn.commit()
-        return {"id": card_id, "status": "held"}
     finally:
         conn.close()
+    _log_decision(card_id, "held")
+    return {"id": card_id, "status": "held"}
 
 @app.post("/api/cards/{card_id}/status")
 async def update_card_status(card_id: int, body: dict):
@@ -103,9 +104,10 @@ async def update_card_status(card_id: int, body: dict):
             "UPDATE cards SET status = ? WHERE id = ?", [new_status, card_id]
         )
         conn.commit()
-        return {"id": card_id, "status": new_status}
     finally:
         conn.close()
+    _log_decision(card_id, new_status)
+    return {"id": card_id, "status": new_status}
 
 @app.post("/api/cards/{card_id}/send-slack")
 async def send_slack_draft(card_id: int):
@@ -152,6 +154,7 @@ async def send_slack_draft(card_id: int):
     conn.close()
 
     _record_stat("drafts_sent")
+    _log_decision(card_id, "sent-slack")
     return {"status": "sent", "output": result.stdout[:500]}
 
 
@@ -200,6 +203,7 @@ async def send_email_draft(card_id: int):
     conn.close()
 
     _record_stat("drafts_sent")
+    _log_decision(card_id, "sent-email")
     return {"status": "sent", "output": result.stdout[:500]}
 
 
@@ -341,6 +345,8 @@ async def execute_card(websocket: WebSocket, card_id: int):
         conn.commit()
         conn.close()
 
+        _log_decision(card_id, "executed")
+
         await websocket.send_text("\n\n[EXECUTION COMPLETE]")
         await websocket.close()
 
@@ -401,6 +407,23 @@ async def refine_card(card_id: int, body: dict = Body(...)):
             conn.close()
         except json.JSONDecodeError:
             pass
+
+    # Persist refinement history on the card
+    full_history = history + [
+        {"role": "user", "content": user_message},
+        {"role": "assistant", "content": response_text},
+    ]
+    conn = get_db()
+    try:
+        conn.execute(
+            "UPDATE cards SET refinement_history = ? WHERE id = ?",
+            [json.dumps(full_history), card_id]
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    _log_decision(card_id, "refined")
 
     return {"response": response_text}
 
@@ -525,6 +548,78 @@ async def jira_sprint(refresh: bool = False):
     _jira_cache["data"] = response
     _jira_cache["fetched_at"] = time.time()
     return response
+
+@app.get("/api/decisions/search")
+async def search_decisions(q: str = "", source: str = None, action: str = None, limit: int = 20):
+    """Search past decisions using FTS5 or LIKE fallback."""
+    limit = min(limit, 100)
+    conn = get_db()
+    try:
+        if q:
+            # Try FTS5 first (sanitize by quoting each term)
+            try:
+                safe_q = " ".join(f'"{w}"' for w in q.split() if w) or '""'
+                query = """
+                    SELECT d.* FROM decisions d
+                    JOIN decisions_fts fts ON d.id = fts.rowid
+                    WHERE decisions_fts MATCH ?
+                """
+                params = [safe_q]
+                if source:
+                    query += " AND d.source = ?"
+                    params.append(source)
+                if action:
+                    query += " AND d.action = ?"
+                    params.append(action)
+                query += " ORDER BY d.decision_at DESC LIMIT ?"
+                params.append(limit)
+                rows = conn.execute(query, params).fetchall()
+            except sqlite3.OperationalError:
+                # FTS not available, fallback to LIKE
+                like = f"%{q}%"
+                query = """
+                    SELECT * FROM decisions
+                    WHERE (summary LIKE ? OR context_notes LIKE ?
+                           OR draft_response LIKE ? OR execution_result LIKE ?
+                           OR tags LIKE ?)
+                """
+                params = [like, like, like, like, like]
+                if source:
+                    query += " AND source = ?"
+                    params.append(source)
+                if action:
+                    query += " AND action = ?"
+                    params.append(action)
+                query += " ORDER BY decision_at DESC LIMIT ?"
+                params.append(limit)
+                rows = conn.execute(query, params).fetchall()
+        else:
+            query = "SELECT * FROM decisions WHERE 1=1"
+            params = []
+            if source:
+                query += " AND source = ?"
+                params.append(source)
+            if action:
+                query += " AND action = ?"
+                params.append(action)
+            query += " ORDER BY decision_at DESC LIMIT ?"
+            params.append(limit)
+            rows = conn.execute(query, params).fetchall()
+
+        decisions = []
+        for row in rows:
+            d = dict(row)
+            for field in ("refinement_history", "tags"):
+                if d.get(field):
+                    try:
+                        d[field] = json.loads(d[field])
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+            decisions.append(d)
+        return {"decisions": decisions, "total": len(decisions)}
+    finally:
+        conn.close()
+
 
 @app.post("/api/notify")
 async def notify(body: dict):
@@ -701,10 +796,11 @@ async def dismiss_card(card_id: int):
         row = conn.execute("SELECT source, summary FROM cards WHERE id = ?", [card_id]).fetchone()
         if row and row[0] == "gmail":
             _track_ignored_pattern(conn, row[1])
-
-        return {"id": card_id, "section": "no-action"}
     finally:
         conn.close()
+
+    _log_decision(card_id, "dismissed")
+    return {"id": card_id, "section": "no-action"}
 
 
 def _track_ignored_pattern(conn, summary):
@@ -742,6 +838,51 @@ def _record_stat(metric, value=1, details=None):
         conn.commit()
     finally:
         conn.close()
+
+
+def _log_decision(card_id, action, extra_fields=None):
+    """Log a decision to the decisions table. Captures full card context.
+    Never raises — logging failures must not break primary operations."""
+    try:
+        conn = get_db()
+        try:
+            row = conn.execute("SELECT * FROM cards WHERE id = ?", [card_id]).fetchone()
+            if not row:
+                return
+            card = dict(row)
+
+            summary = card.get("summary", "") or ""
+            context = card.get("context_notes", "") or ""
+
+            fields = {
+                "card_id": card_id,
+                "action": action,
+                "source": card.get("source"),
+                "summary": summary,
+                "context_notes": context,
+                "draft_response": card.get("draft_response"),
+                "refinement_history": card.get("refinement_history"),
+                "execution_result": card.get("execution_result"),
+                "decision_at": datetime.now().isoformat(),
+                "tags": None,
+            }
+            if extra_fields:
+                fields.update(extra_fields)
+
+            conn.execute(
+                """INSERT INTO decisions
+                   (card_id, action, source, summary, context_notes, draft_response,
+                    refinement_history, execution_result, decision_at, tags)
+                   VALUES (:card_id, :action, :source, :summary, :context_notes,
+                           :draft_response, :refinement_history, :execution_result,
+                           :decision_at, :tags)""",
+                fields
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"Decision log warning: {e}")
 
 
 if __name__ == "__main__":

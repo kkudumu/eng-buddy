@@ -6,11 +6,14 @@ for new patterns, stakeholder updates, and automation opportunities.
 """
 import json
 import re
+import sqlite3
 from datetime import datetime
 from pathlib import Path
 
 MEMORY_DIR = Path.home() / ".claude" / "eng-buddy" / "memory"
 MEMORY_DIR.mkdir(exist_ok=True)
+
+DB_PATH = Path.home() / ".claude" / "eng-buddy" / "inbox.db"
 
 
 def _load(name, default=None):
@@ -41,6 +44,45 @@ def load_patterns():
 
 def load_traces():
     return _load("traces.json", {"traces": []})
+
+
+def load_decisions(query, limit=5):
+    """Search past decisions by keywords. Returns list of dicts."""
+    if not DB_PATH.exists():
+        return []
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        # Try FTS5 (sanitize query by quoting each term)
+        try:
+            safe_query = " ".join(f'"{w}"' for w in query.split() if w)
+            if not safe_query:
+                safe_query = '""'
+            rows = conn.execute(
+                """SELECT d.summary, d.action, d.source, d.context_notes,
+                          d.draft_response, d.decision_at
+                   FROM decisions d
+                   JOIN decisions_fts fts ON d.id = fts.rowid
+                   WHERE decisions_fts MATCH ?
+                   ORDER BY d.decision_at DESC LIMIT ?""",
+                [safe_query, limit]
+            ).fetchall()
+        except sqlite3.OperationalError:
+            like = f"%{query}%"
+            rows = conn.execute(
+                """SELECT summary, action, source, context_notes,
+                          draft_response, decision_at
+                   FROM decisions
+                   WHERE summary LIKE ? OR context_notes LIKE ?
+                         OR draft_response LIKE ? OR tags LIKE ?
+                   ORDER BY decision_at DESC LIMIT ?""",
+                [like, like, like, like, limit]
+            ).fetchall()
+        return [dict(r) for r in rows]
+    except Exception:
+        return []
+    finally:
+        conn.close()
 
 
 def build_context_prompt(batch_items=None):
@@ -86,6 +128,33 @@ def build_context_prompt(batch_items=None):
     else:
         playbook_str = "  No playbooks captured yet."
 
+    # Find similar past decisions based on batch item summaries
+    decisions_str = ""
+    if batch_items:
+        seen = set()
+        all_decisions = []
+        for item in batch_items:
+            summary = item.get("summary", "") or item.get("subject", "") or ""
+            # Extract key words for search
+            words = [w for w in summary.split() if len(w) > 3]
+            if words:
+                query = " ".join(words[:5])
+                for d in load_decisions(query, limit=3):
+                    key = d.get("summary", "")
+                    if key not in seen:
+                        seen.add(key)
+                        all_decisions.append(d)
+        if all_decisions:
+            parts = []
+            for d in all_decisions[:5]:
+                parts.append(f"  - [{d.get('decision_at', '?')[:10]}] {d.get('action', '?')}: {d.get('summary', '?')}")
+                if d.get("draft_response"):
+                    parts.append(f"    Response sent: {d['draft_response'][:100]}...")
+            decisions_str = "\n".join(parts)
+
+    if not decisions_str:
+        decisions_str = "  No similar past decisions found."
+
     return f"""You are eng-buddy, an intelligent work assistant for {ctx.get('role', 'an engineer')} at {ctx.get('company', 'a company')}.
 Manager: {ctx.get('manager', 'unknown')}
 Team: {ctx.get('team', 'unknown')}
@@ -102,6 +171,9 @@ Relevant stakeholders:
 
 Known playbooks:
 {playbook_str}
+
+Similar past decisions (use these for consistency):
+{decisions_str}
 
 AFTER completing your primary task, also output these sections if applicable (as JSON blocks):
 - <!--STAKEHOLDER_UPDATES-->: [{{"name": "...", "field": "...", "value": "..."}}]
