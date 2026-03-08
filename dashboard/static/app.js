@@ -675,12 +675,21 @@ function connectSSE() {
   es.onmessage = (e) => {
     try {
       const card = JSON.parse(e.data);
-      // Prepend new card to queue
-      const queue = document.getElementById('queue');
-      const placeholder = queue.querySelector('[style*="QUEUE EMPTY"]');
-      if (placeholder) placeholder.remove();
-      queue.insertAdjacentHTML('afterbegin', renderCard(card));
       updateCounts();
+
+      // Only inject card into queue if we're on the All tab or matching source tab
+      if (activeFilter === 'all' || activeFilter === card.source) {
+        // Skip live injection for views with custom renderers (Jira board,
+        // Gmail/Slack two-section, Calendar) — a full reload is needed.
+        if (['jira', 'slack', 'gmail', 'calendar'].includes(activeFilter)) {
+          // Silently skip — counts are already updated above
+        } else {
+          const queue = document.getElementById('queue');
+          const placeholder = queue.querySelector('[style*="QUEUE EMPTY"]');
+          if (placeholder) placeholder.remove();
+          queue.insertAdjacentHTML('afterbegin', renderCard(card));
+        }
+      }
 
       // macOS notification via API
       fetch(`/api/notify`, {

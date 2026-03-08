@@ -478,11 +478,14 @@ async def open_session(card_id: int):
                                      dir=Path.home() / ".claude" / "eng-buddy") as f:
         # Use heredoc with a unique delimiter to avoid any content conflicts
         f.write("#!/bin/bash\n")
+        f.write("unset CLAUDECODE\n")
         f.write("export PATH=\"/opt/homebrew/bin:/usr/local/bin:$PATH\"\n")
         f.write("PROMPT=$(cat <<'ENGBUDDY_EOF'\n")
         f.write(context)
         f.write("\nENGBUDDY_EOF\n)\n")
         f.write('claude --dangerously-skip-permissions "$PROMPT"\n')
+        # Clean up temp script on exit
+        f.write(f'rm -f "{f.name}"\n')
         launcher = f.name
 
     os.chmod(launcher, 0o755)
