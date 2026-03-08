@@ -189,7 +189,7 @@ def write_card_to_db(conn, item, classification_result):
     }])
 
     conn.execute(
-        """INSERT INTO cards
+        """INSERT OR IGNORE INTO cards
            (source, timestamp, summary, classification, section, draft_response,
             context_notes, status, proposed_actions, execution_status)
            VALUES ('gmail', ?, ?, ?, ?, ?, ?, 'pending', ?, 'not_run')""",

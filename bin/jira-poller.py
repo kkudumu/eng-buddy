@@ -51,13 +51,15 @@ def fetch_jira_issues():
     return []
 
 def write_card(conn, issue):
-    summary = f"{issue.get('key', '')} — {issue.get('summary', '')}"
+    jira_key = issue.get('key', '')
+    summary = f"{jira_key} — {issue.get('summary', '')}"
     proposed = json.dumps([{
         "type": "review_jira_issue",
-        "draft": f"Review and update Jira issue {issue.get('key')}: {issue.get('summary')}",
+        "draft": f"Review and update Jira issue {jira_key}: {issue.get('summary')}",
         "source": "jira",
         "url": issue.get("url", "")
     }])
+    # UNIQUE(source, summary) index prevents duplicates via INSERT OR IGNORE
     conn.execute(
         """INSERT OR IGNORE INTO cards
            (source, timestamp, summary, classification, status, proposed_actions, execution_status)

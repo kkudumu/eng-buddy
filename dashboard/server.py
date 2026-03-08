@@ -507,6 +507,32 @@ async def open_session(card_id: int):
 
     return {"status": "opened", "terminal": TERMINAL_APP, "launcher": launcher}
 
+def _classify_jira_status(status_str, status_category=None):
+    """Map a Jira status string to a board column (todo/in_progress/done).
+
+    Uses status_category if the LLM returned it, otherwise falls back to
+    keyword matching against common Jira status names.
+    """
+    if status_category:
+        cat = status_category.lower().replace(" ", "_")
+        if cat in ("to_do", "to do"):
+            return "todo"
+        if cat == "done":
+            return "done"
+        if cat in ("in_progress", "in progress"):
+            return "in_progress"
+
+    s = (status_str or "").lower()
+    done_keywords = ("done", "closed", "resolved", "complete", "released", "cancelled")
+    todo_keywords = ("to do", "todo", "open", "new", "backlog", "selected for development",
+                     "waiting for support", "waiting for customer", "pending")
+    if any(k in s for k in done_keywords):
+        return "done"
+    if any(k in s for k in todo_keywords):
+        return "todo"
+    return "in_progress"
+
+
 @app.get("/api/jira/sprint")
 async def jira_sprint(refresh: bool = False):
     """Fetch current sprint tasks via claude CLI + Atlassian MCP."""
@@ -526,15 +552,16 @@ async def jira_sprint(refresh: bool = False):
         f"4. Call jira_search with JQL: {user_clause} AND sprint = <sprint_id> ORDER BY priority DESC, status ASC\n"
         f"   Fields: summary,status,priority,issuetype,labels,updated. Limit: 30.\n"
         f"Return ONLY a JSON array of objects with keys: "
-        f"key, summary, status (string), status_category (To Do/In Progress/Done), "
+        f"key, summary, status (string), status_category (the Jira statusCategory: 'To Do', 'In Progress', or 'Done'), "
         f"priority, issue_type, labels (array), updated. "
+        f"For status_category, use the statusCategory.name from the Jira issue status object. "
         f"No prose, just the JSON array. Empty array [] if no issues found."
     )
 
     try:
         result = subprocess.run(
             ["claude", "--dangerously-skip-permissions", "--print", prompt],
-            capture_output=True, text=True, timeout=45
+            capture_output=True, text=True, timeout=60
         )
         output = result.stdout.strip()
         match = re.search(r'\[.*\]', output, re.DOTALL)
@@ -545,16 +572,14 @@ async def jira_sprint(refresh: bool = False):
     except Exception as e:
         raise HTTPException(500, f"Jira fetch failed: {e}")
 
-    # Group by status category for board view
+    # Group by status category for board view with robust fallback mapping
     board = {"todo": [], "in_progress": [], "done": []}
     for issue in issues:
-        cat = (issue.get("status_category") or "").lower().replace(" ", "_")
-        if cat == "to_do":
-            board["todo"].append(issue)
-        elif cat == "done":
-            board["done"].append(issue)
-        else:
-            board["in_progress"].append(issue)
+        col = _classify_jira_status(
+            issue.get("status"),
+            issue.get("status_category"),
+        )
+        board[col].append(issue)
 
     response = {"issues": issues, "board": board, "total": len(issues)}
     _jira_cache["data"] = response

@@ -92,6 +92,12 @@ MIGRATIONS = [
     END""",
     # Refinement history on cards
     "ALTER TABLE cards ADD COLUMN refinement_history TEXT",
+    # Deduplicate all cards: keep newest per (source, summary), delete older copies
+    """DELETE FROM cards WHERE id NOT IN (
+        SELECT MAX(id) FROM cards GROUP BY source, summary
+    )""",
+    # Unique index to prevent future duplicates (source + summary)
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_cards_source_summary ON cards(source, summary)",
 ]
 
 
@@ -101,7 +107,7 @@ def migrate():
     for sql in MIGRATIONS:
         try:
             conn.execute(sql)
-        except sqlite3.OperationalError as e:
+        except (sqlite3.OperationalError, sqlite3.IntegrityError) as e:
             if "duplicate column" not in str(e).lower() and "already exists" not in str(e).lower():
                 print(f"Migration warning: {e}")
     conn.commit()

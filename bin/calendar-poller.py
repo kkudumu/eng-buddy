@@ -122,7 +122,7 @@ def write_to_db(events):
             "attendees": event.get("attendees", []),
         }])
         conn.execute(
-            """INSERT INTO cards
+            """INSERT OR IGNORE INTO cards
                (source, timestamp, summary, classification, status,
                 proposed_actions, execution_status, section, context_notes)
                VALUES ('calendar', ?, ?, ?, 'pending', ?, 'not_run', ?, ?)""",

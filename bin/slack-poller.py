@@ -101,7 +101,7 @@ def write_to_inbox_db(item):
     try:
         conn = sqlite3.connect(DB_PATH)
         conn.execute(
-            """INSERT INTO cards
+            """INSERT OR IGNORE INTO cards
                (source, timestamp, summary, classification, status,
                 proposed_actions, execution_status,
                 section, draft_response, context_notes, responded)
