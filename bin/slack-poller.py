@@ -83,6 +83,70 @@ def notify(title, message):
 # inbox.db writer
 # ---------------------------------------------------------------------------
 
+def _clean_text(value):
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    return str(value).strip()
+
+
+def _normalize_timestamp(raw_value):
+    value = _clean_text(raw_value)
+    if not value:
+        return ""
+
+    try:
+        if re.fullmatch(r"\d+(\.\d+)?", value):
+            return datetime.fromtimestamp(float(value), timezone.utc).isoformat()
+
+        normalized = value.replace(" ", "T") if "T" not in value and " " in value else value
+        if normalized.endswith("Z"):
+            normalized = f"{normalized[:-1]}+00:00"
+        parsed = datetime.fromisoformat(normalized)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc).isoformat()
+    except ValueError:
+        return ""
+
+
+def normalize_slack_item(item):
+    if not isinstance(item, dict):
+        return None
+
+    normalized = {
+        "sender": _clean_text(item.get("sender") or item.get("from") or item.get("author") or item.get("user")),
+        "channel": _clean_text(item.get("channel") or item.get("channel_name") or item.get("conversation") or item.get("room")),
+        "channel_id": _clean_text(item.get("channel_id") or item.get("conversation_id")),
+        "text": _clean_text(item.get("text") or item.get("message") or item.get("body") or item.get("summary"))[:400],
+        "thread_ts": _clean_text(item.get("thread_ts") or item.get("thread") or item.get("parent_ts")),
+        "timestamp": _normalize_timestamp(item.get("timestamp") or item.get("ts") or item.get("message_ts")),
+        "section": _clean_text(item.get("section") or "no-action").lower(),
+        "classification": _clean_text(item.get("classification") or item.get("label") or "fyi").lower(),
+        "draft_response": _clean_text(item.get("draft_response") or item.get("draft") or item.get("reply_draft")) or None,
+        "context_notes": _clean_text(item.get("context_notes") or item.get("context") or item.get("notes")) or None,
+    }
+
+    responded = item.get("responded")
+    if isinstance(responded, str):
+        normalized["responded"] = responded.strip().lower() in {"1", "true", "yes", "y"}
+    elif responded is None:
+        normalized["responded"] = normalized["classification"] == "responded"
+    else:
+        normalized["responded"] = bool(responded)
+
+    if not any([
+        normalized["sender"],
+        normalized["channel"],
+        normalized["channel_id"],
+        normalized["thread_ts"],
+        normalized["text"],
+    ]):
+        return None
+
+    return normalized
+
 def write_to_inbox_db(item):
     """Write a classified Slack message card to inbox.db."""
     if not DB_PATH.exists():
@@ -104,11 +168,12 @@ def write_to_inbox_db(item):
             """INSERT OR IGNORE INTO cards
                (source, timestamp, summary, classification, status,
                 proposed_actions, execution_status,
-                section, draft_response, context_notes, responded)
+               section, draft_response, context_notes, responded)
                VALUES ('slack', ?, ?, ?, 'pending', ?, 'not_run', ?, ?, ?, ?)""",
             (
-                datetime.now(timezone.utc).isoformat(),
-                f"{item.get('sender', '?')} via {item.get('channel', '?')}: {item.get('text', '')[:200]}",
+                item.get("timestamp") or datetime.now(timezone.utc).isoformat(),
+                f"{item.get('sender') or 'Someone'} via {item.get('channel') or 'Slack'}: "
+                f"{(item.get('text') or item.get('context_notes') or item.get('draft_response') or '(no preview)')[:200]}",
                 item.get("classification", "fyi"),
                 proposed_actions,
                 item.get("section", "no-action"),
@@ -155,6 +220,8 @@ You have access to the Slack MCP tools. Do the following:
 
 Return ONLY a JSON array of objects with these keys:
 sender, channel, channel_id, text (first 400 chars), thread_ts, timestamp, section, classification, draft_response, context_notes, responded (boolean)
+
+Do not omit keys. Use empty strings for unknown string fields and false for responded when unsure.
 
 If there are no relevant messages, return an empty array: []
 No prose, just the JSON array."""
@@ -208,7 +275,17 @@ def main():
     now = datetime.now()
 
     print(f"[{now.strftime('%H:%M')}] Fetching and classifying Slack messages via MCP...")
-    messages = fetch_and_classify()
+    raw_messages = fetch_and_classify()
+    messages = []
+    skipped_count = 0
+
+    for item in raw_messages:
+        normalized = normalize_slack_item(item)
+        if not normalized:
+            skipped_count += 1
+            print(f"[{now.strftime('%H:%M')}] Skipping malformed Slack item: {json.dumps(item)[:300]}")
+            continue
+        messages.append(normalized)
 
     if not messages:
         print(f"[{now.strftime('%H:%M')}] No new messages needing attention")
@@ -217,6 +294,8 @@ def main():
         return
 
     print(f"[{now.strftime('%H:%M')}] Processing {len(messages)} message(s)...")
+    if skipped_count:
+        print(f"[{now.strftime('%H:%M')}] Skipped {skipped_count} malformed Slack item(s)")
 
     # Write to inbox.db + collect needs-action for notification
     needs_action_items = []

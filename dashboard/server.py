@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -23,25 +24,82 @@ DB_PATH = Path.home() / ".claude" / "eng-buddy" / "inbox.db"
 ENG_BUDDY_DIR = Path.home() / ".claude" / "eng-buddy"
 STATIC_DIR = Path(__file__).parent / "static"
 TASKS_FILE = ENG_BUDDY_DIR / "tasks" / "active-tasks.md"
+AUTOMATION_DRAFTS_FILE = ENG_BUDDY_DIR / "tasks" / "automation-drafts.md"
 DAILY_DIR = ENG_BUDDY_DIR / "daily"
 KNOWLEDGE_DIR = ENG_BUDDY_DIR / "knowledge"
 PATTERNS_DIR = ENG_BUDDY_DIR / "patterns"
 STAKEHOLDERS_DIR = ENG_BUDDY_DIR / "stakeholders"
 MEMORY_DIR = ENG_BUDDY_DIR / "memory"
 RUNTIME_DIR = ENG_BUDDY_DIR / ".runtime"
+CLAUDE_SYNC_FILE = RUNTIME_DIR / "claude-sync-events.txt"
 LAUNCHER_DIR = RUNTIME_DIR / "launchers"
 TERMINAL_APP = os.environ.get("ENG_BUDDY_TERMINAL", "Terminal")
 JIRA_USER = os.environ.get("ENG_BUDDY_JIRA_USER", "")
+SUGGESTION_SOURCE = "suggestions"
+SUGGESTION_REFRESH_INTERVAL_SECONDS = 1800
+SUGGESTION_MAX_ITEMS = 12
+SUGGESTION_CATEGORY_ORDER = ("automation", "workflow", "time-saver", "gap")
+SUGGESTION_CATEGORY_LABELS = {
+    "automation": "Automation",
+    "workflow": "Workflow Improvements",
+    "time-saver": "Time Savers",
+    "gap": "Gaps / Missing Coverage",
+}
+SUGGESTION_KNOWLEDGE_FILES = (
+    KNOWLEDGE_DIR / "runbooks.md",
+    PATTERNS_DIR / "documentation-gaps.md",
+    PATTERNS_DIR / "failure-patterns.md",
+    PATTERNS_DIR / "success-patterns.md",
+    PATTERNS_DIR / "recurring-questions.md",
+    PATTERNS_DIR / "task-execution.md",
+)
 
 # In-memory cache for Jira sprint data
 _jira_cache = {"data": None, "fetched_at": 0}
 # Source-level stale flags used to emit SSE cache invalidation events.
 _stale_sources = set()
+_suggestion_refresh_lock = threading.Lock()
+_suggestion_worker_started = False
+POLLER_DEFINITIONS = (
+    {
+        "id": "slack",
+        "label": "Slack",
+        "launch_label": "com.engbuddy.slackpoller",
+        "interval_seconds": 300,
+        "state_file": "slack-poller-state.json",
+        "log_file": "slack-poller.log",
+    },
+    {
+        "id": "gmail",
+        "label": "Gmail",
+        "launch_label": "com.engbuddy.gmailpoller",
+        "interval_seconds": 600,
+        "state_file": "gmail-poller-state.json",
+        "log_file": "gmail-poller.log",
+    },
+    {
+        "id": "calendar",
+        "label": "Calendar",
+        "launch_label": "com.engbuddy.calendarpoller",
+        "interval_seconds": 1800,
+        "state_file": "calendar-poller-state.json",
+        "log_file": "calendar-poller.log",
+    },
+    {
+        "id": "jira",
+        "label": "Jira",
+        "launch_label": "com.engbuddy.jirapoller",
+        "interval_seconds": 300,
+        "state_file": "jira-ingestor-state.json",
+        "log_file": "jira-poller.log",
+    },
+)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     STATIC_DIR.mkdir(exist_ok=True)
     migrate()
+    _start_suggestion_refresh_worker()
     yield
 
 app = FastAPI(lifespan=lifespan)
@@ -122,6 +180,452 @@ def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def _parse_json_dict(raw_value, default=None):
+    if isinstance(raw_value, dict):
+        return raw_value
+    if not raw_value:
+        return default.copy() if isinstance(default, dict) else (default or {})
+    try:
+        parsed = json.loads(raw_value)
+        if isinstance(parsed, dict):
+            return parsed
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return default.copy() if isinstance(default, dict) else (default or {})
+
+
+def _suggestion_category_value(raw_value: str = ""):
+    normalized = str(raw_value or "").strip().lower().replace("_", "-")
+    if normalized in SUGGESTION_CATEGORY_ORDER:
+        return normalized
+    if "workflow" in normalized:
+        return "workflow"
+    if "time" in normalized or "save" in normalized:
+        return "time-saver"
+    if any(token in normalized for token in ("gap", "missing", "doc")):
+        return "gap"
+    return "automation"
+
+
+def _card_analysis_metadata(card: dict):
+    meta = _parse_json_dict(card.get("analysis_metadata"), {})
+    meta["category"] = _suggestion_category_value(meta.get("category", ""))
+    evidence = meta.get("evidence")
+    meta["evidence"] = evidence if isinstance(evidence, list) else []
+    generated_from = meta.get("generated_from")
+    meta["generated_from"] = generated_from if isinstance(generated_from, list) else []
+    return meta
+
+
+def _compute_suggestion_fingerprint(category: str, title: str):
+    payload = f"{_suggestion_category_value(category)}::{str(title or '').strip().lower()}"
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def _read_optional_text(path: Path, max_chars: int = 2000):
+    if not path.exists() or not path.is_file():
+        return ""
+    text = path.read_text(encoding="utf-8", errors="replace").strip()
+    if len(text) > max_chars:
+        return text[:max_chars].rstrip() + "\n..."
+    return text
+
+
+def _load_patterns_memory():
+    path = MEMORY_DIR / "patterns.json"
+    if not path.exists():
+        return {"patterns": [], "automation_opportunities": []}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(payload, dict):
+            payload.setdefault("patterns", [])
+            payload.setdefault("automation_opportunities", [])
+            return payload
+    except json.JSONDecodeError:
+        pass
+    return {"patterns": [], "automation_opportunities": []}
+
+
+def _build_suggestion_prompt(context_payload: dict):
+    return (
+        "You are eng-buddy analyzing current work for high-value improvements.\n"
+        "Review the provided tasks, inbox cards, learning signals, automation opportunities, and curated knowledge excerpts.\n"
+        "Return ONLY JSON with this shape:\n"
+        '{'
+        '"suggestions": ['
+        '{"title":"","category":"automation|workflow|time-saver|gap","priority":"high|medium|low",'
+        '"why_now":"","evidence":[""],"generated_from":[""],'
+        '"task_draft":{"title":"","priority":"","description":""},'
+        '"automation_draft":{"name":"","problem":"","proposal":"","signals":[""],"guardrails":[""]},'
+        '"open_session_prompt":"","proposed_actions":[{"type":"","draft":""}]}'
+        "]}\n"
+        f"Return at most {SUGGESTION_MAX_ITEMS} suggestions total.\n"
+        "Use concise titles. Avoid duplicates. Only include suggestions that are actionable now.\n\n"
+        f"Context:\n{json.dumps(context_payload, indent=2)}"
+    )
+
+
+def _collect_suggestion_context():
+    tasks = _parse_active_tasks()
+    patterns = _load_patterns_memory()
+    knowledge_docs = []
+    for path in SUGGESTION_KNOWLEDGE_FILES:
+        text = _read_optional_text(path)
+        if text:
+            knowledge_docs.append({"path": str(path.relative_to(ENG_BUDDY_DIR)), "content": text})
+
+    fourteen_days_ago = (datetime.now(timezone.utc) - timedelta(days=14)).isoformat(sep=" ")
+    conn = get_db()
+    try:
+        card_rows = conn.execute(
+            """SELECT source, summary, context_notes, classification, section, COUNT(*) AS count
+               FROM cards
+               WHERE source != ?
+                 AND status = 'pending'
+               GROUP BY source, summary, context_notes, classification, section
+               ORDER BY source ASC, count DESC, summary ASC
+               LIMIT 40""",
+            [SUGGESTION_SOURCE],
+        ).fetchall()
+        learning_rows = conn.execute(
+            """SELECT category, title, note, status, created_at
+               FROM learning_events
+               WHERE datetime(created_at) >= datetime(?)
+               ORDER BY datetime(created_at) DESC, id DESC
+               LIMIT 30""",
+            [fourteen_days_ago],
+        ).fetchall()
+    except sqlite3.OperationalError:
+        card_rows = []
+        learning_rows = []
+    finally:
+        conn.close()
+
+    return {
+        "tasks": [
+            {
+                "number": task.get("number"),
+                "title": task.get("title"),
+                "status": task.get("status"),
+                "priority": task.get("priority"),
+                "description": task.get("description", "")[:400],
+            }
+            for task in tasks[:20]
+        ],
+        "pending_cards": [dict(row) for row in card_rows],
+        "learning_events": [dict(row) for row in learning_rows],
+        "automation_opportunities": patterns.get("automation_opportunities", [])[:20],
+        "patterns": patterns.get("patterns", [])[:20],
+        "knowledge": knowledge_docs,
+    }
+
+
+def _normalize_suggestion_candidate(item: dict):
+    if not isinstance(item, dict):
+        return None
+    title = str(item.get("title", "")).strip()
+    if not title:
+        return None
+    category = _suggestion_category_value(item.get("category", ""))
+    why_now = str(item.get("why_now", "")).strip()
+    priority = str(item.get("priority", "medium")).strip().lower() or "medium"
+    evidence = item.get("evidence") if isinstance(item.get("evidence"), list) else []
+    evidence = [str(entry).strip() for entry in evidence if str(entry).strip()][:6]
+    generated_from = item.get("generated_from") if isinstance(item.get("generated_from"), list) else []
+    generated_from = [str(entry).strip() for entry in generated_from if str(entry).strip()][:10]
+    proposed_actions = item.get("proposed_actions") if isinstance(item.get("proposed_actions"), list) else []
+    normalized_actions = []
+    for action in proposed_actions[:6]:
+        if not isinstance(action, dict):
+            continue
+        action_type = str(action.get("type", "next-step")).strip() or "next-step"
+        draft = str(action.get("draft", "")).strip()
+        normalized_actions.append({"type": action_type, "draft": draft})
+
+    task_draft = item.get("task_draft") if isinstance(item.get("task_draft"), dict) else {}
+    automation_draft = item.get("automation_draft") if isinstance(item.get("automation_draft"), dict) else {}
+    fingerprint = _compute_suggestion_fingerprint(category, title)
+    last_analyzed_at = datetime.now(timezone.utc).isoformat()
+    return {
+        "summary": title,
+        "classification": priority,
+        "context_notes": why_now,
+        "section": category,
+        "proposed_actions": normalized_actions,
+        "analysis_metadata": {
+            "category": category,
+            "priority": priority,
+            "evidence": evidence,
+            "fingerprint": fingerprint,
+            "generated_from": generated_from,
+            "task_draft": task_draft,
+            "automation_draft": automation_draft,
+            "open_session_prompt": str(item.get("open_session_prompt", "")).strip(),
+            "last_analyzed_at": last_analyzed_at,
+        },
+    }
+
+
+def _generate_suggestion_candidates():
+    context_payload = _collect_suggestion_context()
+    prompt = _build_suggestion_prompt(context_payload)
+    result = _run_claude_print(prompt, timeout=90)
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr[:300] or "suggestion generation failed")
+
+    parsed = _extract_balanced_json(result.stdout.strip(), "{")
+    if not isinstance(parsed, dict):
+        raise RuntimeError("suggestion generation returned invalid JSON")
+
+    suggestions = parsed.get("suggestions")
+    if not isinstance(suggestions, list):
+        raise RuntimeError("suggestion generation returned invalid suggestions payload")
+
+    normalized = []
+    seen = set()
+    for item in suggestions:
+        candidate = _normalize_suggestion_candidate(item)
+        if not candidate:
+            continue
+        fingerprint = candidate["analysis_metadata"]["fingerprint"]
+        if fingerprint in seen:
+            continue
+        seen.add(fingerprint)
+        normalized.append(candidate)
+        if len(normalized) >= SUGGESTION_MAX_ITEMS:
+            break
+    return normalized
+
+
+def _refresh_suggestions_sync():
+    if not _suggestion_refresh_lock.acquire(blocking=False):
+        return {"status": "busy"}
+
+    try:
+        try:
+            generated = _generate_suggestion_candidates()
+        except Exception as exc:
+            return {"status": "error", "detail": str(exc)}
+        generated_by_fingerprint = {
+            item["analysis_metadata"]["fingerprint"]: item for item in generated
+        }
+        conn = get_db()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM cards WHERE source = ? ORDER BY id ASC",
+                [SUGGESTION_SOURCE],
+            ).fetchall()
+            existing = [dict(row) for row in rows]
+            existing_by_fingerprint = {}
+            for row in existing:
+                meta = _card_analysis_metadata(row)
+                fingerprint = meta.get("fingerprint")
+                if fingerprint:
+                    existing_by_fingerprint[fingerprint] = row
+
+            inserted = 0
+            updated = 0
+            skipped = 0
+
+            for fingerprint, item in generated_by_fingerprint.items():
+                existing_row = existing_by_fingerprint.get(fingerprint)
+                if existing_row:
+                    if existing_row.get("status") in {"held", "completed"}:
+                        skipped += 1
+                        continue
+                    conn.execute(
+                        """UPDATE cards
+                           SET timestamp = datetime('now'),
+                               summary = ?,
+                               classification = ?,
+                               context_notes = ?,
+                               section = ?,
+                               proposed_actions = ?,
+                               analysis_metadata = ?
+                           WHERE id = ?""",
+                        [
+                            item["summary"],
+                            item["classification"],
+                            item["context_notes"],
+                            item["section"],
+                            json.dumps(item["proposed_actions"]),
+                            json.dumps(item["analysis_metadata"]),
+                            existing_row["id"],
+                        ],
+                    )
+                    updated += 1
+                    continue
+
+                conn.execute(
+                    """INSERT INTO cards (
+                           source, timestamp, summary, classification, status,
+                           proposed_actions, execution_status, section, context_notes, analysis_metadata
+                       )
+                       VALUES (?, datetime('now'), ?, ?, 'pending', ?, 'not_run', ?, ?, ?)""",
+                    [
+                        SUGGESTION_SOURCE,
+                        item["summary"],
+                        item["classification"],
+                        json.dumps(item["proposed_actions"]),
+                        item["section"],
+                        item["context_notes"],
+                        json.dumps(item["analysis_metadata"]),
+                    ],
+                )
+                inserted += 1
+
+            active_fingerprints = set(generated_by_fingerprint.keys())
+            for row in existing:
+                meta = _card_analysis_metadata(row)
+                fingerprint = meta.get("fingerprint")
+                if row.get("status") != "pending" or not fingerprint or fingerprint in active_fingerprints:
+                    continue
+                decision_count = conn.execute(
+                    """SELECT COUNT(*) FROM decision_events
+                       WHERE entity_type = 'card' AND entity_id = ?""",
+                    [str(row["id"])],
+                ).fetchone()[0]
+                if decision_count:
+                    continue
+                conn.execute(
+                    "UPDATE cards SET status = 'completed', execution_result = ? WHERE id = ?",
+                    ["stale suggestion replaced by newer analysis", row["id"]],
+                )
+
+            conn.commit()
+        finally:
+            conn.close()
+
+        _stale_sources.add(SUGGESTION_SOURCE)
+        return {"status": "ok", "inserted": inserted, "updated": updated, "generated": len(generated), "skipped": skipped}
+    finally:
+        _suggestion_refresh_lock.release()
+
+
+def _suggestion_refresh_loop():
+    while True:
+        try:
+            _refresh_suggestions_sync()
+        except Exception:
+            pass
+        time.sleep(SUGGESTION_REFRESH_INTERVAL_SECONDS)
+
+
+def _start_suggestion_refresh_worker():
+    global _suggestion_worker_started
+    if _suggestion_worker_started or os.environ.get("PYTEST_CURRENT_TEST"):
+        return
+    _suggestion_worker_started = True
+    threading.Thread(target=_suggestion_refresh_loop, daemon=True).start()
+
+
+def _eng_buddy_path(*parts: str) -> Path:
+    return ENG_BUDDY_DIR.joinpath(*parts)
+
+
+def _utc_iso(dt: datetime | None) -> str | None:
+    if not dt:
+        return None
+    return dt.astimezone(timezone.utc).isoformat()
+
+
+def _local_timezone():
+    return datetime.now().astimezone().tzinfo or timezone.utc
+
+
+def _read_json_file(path: Path):
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def _parse_poller_state_timestamp(poller_id: str, state: dict | None) -> datetime | None:
+    if not isinstance(state, dict):
+        return None
+
+    try:
+        if poller_id == "slack":
+            raw = state.get("last_check")
+            if raw:
+                return datetime.fromtimestamp(float(raw), tz=timezone.utc)
+
+        if poller_id == "gmail":
+            raw = int(state.get("last_check_ts") or 0)
+            if raw > 0:
+                return datetime.fromtimestamp(raw, tz=timezone.utc)
+
+        if poller_id == "calendar":
+            raw = (state.get("last_fetch") or "").strip()
+            if raw:
+                parsed = datetime.strptime(raw, "%Y-%m-%d-%H-%M")
+                return parsed.replace(tzinfo=_local_timezone()).astimezone(timezone.utc)
+
+        if poller_id == "jira":
+            raw = (state.get("last_checked") or "").strip()
+            if raw:
+                parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=_local_timezone())
+                return parsed.astimezone(timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+    return None
+
+
+def _file_mtime(path: Path) -> datetime | None:
+    try:
+        if path.exists():
+            return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+    except OSError:
+        return None
+    return None
+
+
+def _resolve_poller_last_run(poller: dict) -> datetime | None:
+    state_path = _eng_buddy_path(poller["state_file"])
+    log_path = _eng_buddy_path(poller["log_file"])
+    state = _read_json_file(state_path)
+
+    candidates = [
+        _parse_poller_state_timestamp(poller["id"], state),
+        _file_mtime(state_path),
+        _file_mtime(log_path),
+    ]
+    valid = [candidate for candidate in candidates if candidate]
+    return max(valid) if valid else None
+
+
+def _build_poller_status(poller: dict, now: datetime) -> dict:
+    last_run_at = _resolve_poller_last_run(poller)
+    interval_seconds = int(poller["interval_seconds"])
+    next_run_at = None
+    seconds_until_next = None
+    health = "unknown"
+
+    if last_run_at:
+        next_run_at = last_run_at + timedelta(seconds=interval_seconds)
+        if next_run_at <= now:
+            missed_intervals = int((now - next_run_at).total_seconds() // interval_seconds) + 1
+            next_run_at += timedelta(seconds=missed_intervals * interval_seconds)
+        seconds_until_next = max(0, int((next_run_at - now).total_seconds()))
+        health = "running" if (now - last_run_at).total_seconds() <= interval_seconds * 2 else "stale"
+
+    return {
+        "id": poller["id"],
+        "label": poller["label"],
+        "launch_label": poller["launch_label"],
+        "interval_seconds": interval_seconds,
+        "last_run_at": _utc_iso(last_run_at),
+        "next_run_at": _utc_iso(next_run_at),
+        "seconds_until_next": seconds_until_next,
+        "health": health,
+    }
 
 
 def _normalize_action_name(action: str) -> str:
@@ -656,7 +1160,72 @@ def _row_to_card(row):
         card["proposed_actions"] = json.loads(card.get("proposed_actions") or "[]")
     except (json.JSONDecodeError, TypeError):
         card["proposed_actions"] = []
+    card["analysis_metadata"] = _card_analysis_metadata(card)
     return card
+
+
+def _parse_card_timestamp(raw_value):
+    value = str(raw_value or "").strip()
+    if not value:
+        return None
+
+    normalized = value.replace(" ", "T") if "T" not in value and " " in value else value
+    if normalized.endswith("Z"):
+        normalized = f"{normalized[:-1]}+00:00"
+
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _next_business_day_end(local_timestamp: datetime):
+    next_day = local_timestamp.date() + timedelta(days=1)
+    while next_day.weekday() >= 5:
+        next_day += timedelta(days=1)
+    return datetime.combine(next_day, datetime.max.time(), tzinfo=local_timestamp.tzinfo)
+
+
+def _should_include_in_inbox_view(card: dict, source: str, days: int, now_utc: datetime, now_local: datetime):
+    card_timestamp = _parse_card_timestamp(card.get("timestamp"))
+    if card_timestamp is None:
+        return True
+
+    if card_timestamp >= now_utc - timedelta(days=days):
+        return True
+
+    if source != "slack":
+        return False
+
+    section = (card.get("section") or "").lower()
+    classification = (card.get("classification") or "").lower()
+    responded = bool(card.get("responded"))
+    status = (card.get("status") or "").lower()
+    needs_sections = {"needs-action", "action-needed", "needs_response", "needs-response"}
+    no_action_sections = {"no-action", "noise", "responded", "fyi", "alert"}
+
+    is_needs_action = section in needs_sections or (
+        classification == "needs-response" and not responded
+    )
+    is_no_action = (
+        section in no_action_sections
+        or responded
+        or status in {"completed", "failed"}
+    ) and not is_needs_action
+
+    if not is_no_action:
+        return False
+
+    local_timestamp = card_timestamp.astimezone(now_local.tzinfo or timezone.utc)
+    retention_deadline = max(
+        local_timestamp + timedelta(days=days),
+        _next_business_day_end(local_timestamp),
+    )
+    return now_local <= retention_deadline
 
 @app.get("/")
 async def root():
@@ -665,6 +1234,15 @@ async def root():
 @app.get("/api/health")
 async def health():
     return {"status": "ok"}
+
+
+@app.get("/api/pollers/status")
+async def get_poller_status():
+    now = datetime.now(timezone.utc)
+    return {
+        "pollers": [_build_poller_status(poller, now) for poller in POLLER_DEFINITIONS],
+        "generated_at": now.isoformat(),
+    }
 
 
 @app.post("/api/restart")
@@ -940,6 +1518,70 @@ async def get_cards(source: str = None, status: str = "pending", section: str = 
         conn.close()
 
 
+def _latest_suggestion_analysis_timestamp(cards):
+    timestamps = []
+    for card in cards:
+        meta = card.get("analysis_metadata", {})
+        if meta.get("last_analyzed_at"):
+            timestamps.append(meta["last_analyzed_at"])
+    return max(timestamps) if timestamps else ""
+
+
+def _group_suggestion_cards(cards):
+    groups = {key: [] for key in SUGGESTION_CATEGORY_ORDER}
+    held = []
+    for card in cards:
+        meta = card.get("analysis_metadata", {})
+        category = _suggestion_category_value(meta.get("category", card.get("section", "")))
+        if card.get("status") == "held":
+            held.append(card)
+            continue
+        if card.get("status") != "pending":
+            continue
+        groups.setdefault(category, []).append(card)
+    return groups, held
+
+
+@app.get("/api/suggestions")
+async def get_suggestions(refresh: bool = False):
+    refresh_result = None
+    if refresh:
+        refresh_result = _refresh_suggestions_sync()
+
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM cards WHERE source = ? ORDER BY timestamp DESC, id DESC",
+            [SUGGESTION_SOURCE],
+        ).fetchall()
+        cards = [_row_to_card(row) for row in rows]
+    finally:
+        conn.close()
+
+    groups, held = _group_suggestion_cards(cards)
+    return {
+        "source": SUGGESTION_SOURCE,
+        "sections": [
+            {
+                "key": key,
+                "label": SUGGESTION_CATEGORY_LABELS[key],
+                "cards": groups.get(key, []),
+                "count": len(groups.get(key, [])),
+            }
+            for key in SUGGESTION_CATEGORY_ORDER
+        ],
+        "held": held,
+        "held_count": len(held),
+        "last_analyzed_at": _latest_suggestion_analysis_timestamp(cards),
+        "refresh_result": refresh_result,
+    }
+
+
+@app.post("/api/suggestions/refresh")
+async def refresh_suggestions():
+    return _refresh_suggestions_sync()
+
+
 @app.post("/api/cards/approve-all")
 async def approve_all_cards_guard():
     raise HTTPException(405, "Bulk card approval is disabled. Approve cards one-by-one.")
@@ -951,7 +1593,10 @@ async def get_inbox_view(source: str, days: int = 3):
     if source not in {"slack", "gmail"}:
         raise HTTPException(400, "source must be slack or gmail")
     days = max(1, min(days, 14))
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    now_utc = datetime.now(timezone.utc)
+    now_local = now_utc.astimezone()
+    lookback_days = max(days, 7) if source == "slack" else days
+    cutoff = (now_utc - timedelta(days=lookback_days)).isoformat()
 
     conn = get_db()
     try:
@@ -972,6 +1617,8 @@ async def get_inbox_view(source: str, days: int = 3):
 
     for row in rows:
         card = _row_to_card(row)
+        if not _should_include_in_inbox_view(card, source, days, now_utc, now_local):
+            continue
         section = (card.get("section") or "").lower()
         classification = (card.get("classification") or "").lower()
         responded = bool(card.get("responded"))
@@ -1070,6 +1717,84 @@ def _parse_active_tasks():
     return tasks
 
 
+def _next_task_number():
+    tasks = _parse_active_tasks()
+    numbers = [int(task.get("number", 0)) for task in tasks if str(task.get("number", "")).isdigit()]
+    return (max(numbers) if numbers else 0) + 1
+
+
+def _append_task_from_suggestion(card: dict, metadata: dict):
+    task_number = _next_task_number()
+    task_draft = metadata.get("task_draft") if isinstance(metadata.get("task_draft"), dict) else {}
+    title = str(task_draft.get("title", "")).strip() or str(card.get("summary", "")).strip()
+    priority = str(task_draft.get("priority", "")).strip() or str(metadata.get("priority", "medium")).strip()
+    description = str(task_draft.get("description", "")).strip() or str(card.get("context_notes", "")).strip()
+    evidence = metadata.get("evidence") if isinstance(metadata.get("evidence"), list) else []
+    source_lines = metadata.get("generated_from") if isinstance(metadata.get("generated_from"), list) else []
+
+    block_lines = [
+        f"### #{task_number} - {title}",
+        "**Status**: pending",
+        f"**Priority**: {priority}",
+        f"**Description**: {description or 'Follow up on approved dashboard suggestion.'}",
+    ]
+    if evidence:
+        block_lines.append("**Evidence**:")
+        block_lines.extend([f"- {str(item).strip()}" for item in evidence if str(item).strip()])
+    if source_lines:
+        block_lines.append("**Generated From**:")
+        block_lines.extend([f"- {str(item).strip()}" for item in source_lines if str(item).strip()])
+
+    TASKS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    block_text = "\n".join(block_lines).rstrip() + "\n"
+    if not TASKS_FILE.exists():
+        TASKS_FILE.write_text("## PENDING TASKS\n\n" + block_text, encoding="utf-8")
+        return task_number
+
+    content = TASKS_FILE.read_text(encoding="utf-8")
+    pending_match = re.search(r"^##\s+PENDING TASKS\s*$", content, flags=re.MULTILINE)
+    if pending_match:
+        insert_at = pending_match.end()
+        updated = content[:insert_at] + "\n\n" + block_text + content[insert_at:]
+    else:
+        separator = "\n\n" if content.strip() else ""
+        updated = content.rstrip() + f"{separator}## PENDING TASKS\n\n" + block_text
+    TASKS_FILE.write_text(updated.rstrip() + "\n", encoding="utf-8")
+    return task_number
+
+
+def _append_automation_draft(card: dict, metadata: dict, task_number: int):
+    automation_draft = metadata.get("automation_draft") if isinstance(metadata.get("automation_draft"), dict) else {}
+    name = str(automation_draft.get("name", "")).strip() or str(card.get("summary", "")).strip()
+    problem = str(automation_draft.get("problem", "")).strip() or str(card.get("context_notes", "")).strip()
+    proposal = str(automation_draft.get("proposal", "")).strip() or "Implement the approved automation suggestion."
+    signals = automation_draft.get("signals") if isinstance(automation_draft.get("signals"), list) else []
+    guardrails = automation_draft.get("guardrails") if isinstance(automation_draft.get("guardrails"), list) else []
+
+    AUTOMATION_DRAFTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    lines = [
+        f"## Task #{task_number} - {name}",
+        f"- Card ID: {card.get('id')}",
+        f"- Category: {metadata.get('category', 'automation')}",
+        f"- Problem: {problem}",
+        f"- Proposal: {proposal}",
+    ]
+    if signals:
+        lines.append("- Signals:")
+        lines.extend([f"  - {str(item).strip()}" for item in signals if str(item).strip()])
+    if guardrails:
+        lines.append("- Guardrails:")
+        lines.extend([f"  - {str(item).strip()}" for item in guardrails if str(item).strip()])
+
+    draft_block = "\n".join(lines).rstrip() + "\n\n"
+    if AUTOMATION_DRAFTS_FILE.exists():
+        existing = AUTOMATION_DRAFTS_FILE.read_text(encoding="utf-8")
+    else:
+        existing = "# Automation Drafts\n\n"
+    AUTOMATION_DRAFTS_FILE.write_text(existing.rstrip() + "\n\n" + draft_block, encoding="utf-8")
+    return str(AUTOMATION_DRAFTS_FILE)
+
+
 def _task_jira_keys(task: dict):
     search_text = f"{task.get('title', '')}\n{task.get('description', '')}"
     return sorted(set(re.findall(r"\b[A-Z][A-Z0-9]+-\d+\b", search_text)))
@@ -1082,42 +1807,78 @@ def _get_task_by_number(task_number: int):
     return None
 
 
-def _set_task_status(task_number: int, new_status: str):
-    """Update status in every matching task block by task number."""
+def _upsert_task_metadata_line(block: str, label: str, value: str):
+    pattern = rf"^\*\*{re.escape(label)}\*\*:\s*.*$"
+    replacement = f"**{label}**: {value}"
+    if re.search(pattern, block, flags=re.MULTILINE):
+        return re.sub(pattern, replacement, block, count=1, flags=re.MULTILINE)
+
+    lines = block.splitlines()
+    insert_at = len(lines)
+    for idx, line in enumerate(lines[1:], start=1):
+        if line.startswith("**Description**:"):
+            insert_at = idx
+            break
+    lines.insert(insert_at, replacement)
+    return "\n".join(lines)
+
+
+def _set_task_status(task_number: int, new_status: str, completion_note: str = ""):
+    """Update matching task blocks and move completed ones into the completed section."""
     if not TASKS_FILE.exists():
         return 0
 
     content = TASKS_FILE.read_text(encoding="utf-8")
     pattern = re.compile(
-        rf"(^###\s+#{task_number}\s*-\s*.+?)(?=^###\s+#\d+\s*-|\Z)",
+        rf"(^###\s+#{task_number}\s*-\s*.+?)(?=^###\s+#\d+\s*-|^##\s+|\Z)",
         re.MULTILINE | re.DOTALL,
     )
 
-    updated_count = 0
+    matches = list(pattern.finditer(content))
+    if not matches:
+        return 0
 
-    def replace_status(match):
-        nonlocal updated_count
-        updated_count += 1
-        block = match.group(1)
+    updated_blocks = []
 
+    for match in matches:
+        block = match.group(1).rstrip()
         if re.search(r"^\*\*Status\*\*:\s*.+$", block, flags=re.MULTILINE):
-            return re.sub(
+            block = re.sub(
                 r"^\*\*Status\*\*:\s*.+$",
                 f"**Status**: {new_status}",
                 block,
                 count=1,
                 flags=re.MULTILINE,
             )
+        else:
+            lines = block.splitlines()
+            if lines:
+                block = "\n".join([lines[0], f"**Status**: {new_status}", *lines[1:]])
 
-        lines = block.splitlines()
-        if not lines:
-            return block
-        return "\n".join([lines[0], f"**Status**: {new_status}", *lines[1:]])
+        if completion_note:
+            block = _upsert_task_metadata_line(block, "Completion Note", completion_note)
 
-    updated = pattern.sub(replace_status, content)
-    if updated_count:
-        TASKS_FILE.write_text(updated, encoding="utf-8")
-    return updated_count
+        updated_blocks.append(block)
+
+    updated = pattern.sub("", content).rstrip()
+    completed_heading = "## COMPLETED TASKS"
+    completed_match = re.search(r"^##\s+COMPLETED TASKS\s*$", updated, flags=re.MULTILINE)
+    blocks_text = "\n\n".join(updated_blocks)
+
+    if completed_match:
+        head = updated[:completed_match.end()].rstrip("\n")
+        tail = updated[completed_match.end():].lstrip("\n")
+        pieces = [head, "", blocks_text]
+        if tail.strip():
+            pieces.extend(["", tail.rstrip()])
+        updated = "\n".join(pieces)
+    else:
+        pieces = [updated] if updated else []
+        pieces.extend([completed_heading, "", blocks_text])
+        updated = "\n\n".join(piece for piece in pieces if piece != "")
+
+    TASKS_FILE.write_text(updated.rstrip() + "\n", encoding="utf-8")
+    return len(updated_blocks)
 
 
 def _append_daily_log_completed(entry: str):
@@ -1161,6 +1922,16 @@ def _append_daily_log_completed(entry: str):
 
     daily_file.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
     return daily_file, True
+
+
+def _queue_claude_sync_event(message: str):
+    text = (message or "").strip()
+    if not text:
+        return
+    CLAUDE_SYNC_FILE.parent.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with CLAUDE_SYNC_FILE.open("a", encoding="utf-8") as handle:
+        handle.write(f"- [{timestamp}] {text}\n")
 
 
 def _build_task_daily_log_line(task: dict, close_note: str = ""):
@@ -1460,13 +2231,13 @@ async def close_task(task_number: int, body: dict = Body(default={})):
 
     close_date = date.today().isoformat()
     new_status = f"completed ({close_date})"
-    updated_blocks = _set_task_status(task_number, new_status)
+    note = (body.get("note") or "").strip()
+    updated_blocks = _set_task_status(task_number, new_status, completion_note=note)
     if not updated_blocks:
         _mark_action_step_status(action_step_id, "failed")
         _finish_execution_attempt(attempt_id, "failed", error="task block not found")
         raise HTTPException(404, f"task #{task_number} block not found in active file")
 
-    note = (body.get("note") or "").strip()
     updated_task = _get_task_by_number(task_number) or task
     timestamp = datetime.now().strftime("%H:%M")
     try:
@@ -1479,6 +2250,13 @@ async def close_task(task_number: int, body: dict = Body(default={})):
             f"{updated_task.get('title', '')} — {fallback_detail}"
         )
     daily_file, daily_inserted = _append_daily_log_completed(entry)
+    sync_message = (
+        f"Dashboard closed Task #{task_number} as {new_status}. "
+        f"Re-read ~/.claude/eng-buddy/tasks/active-tasks.md and do not treat it as active."
+    )
+    if note:
+        sync_message += f" Close note: {note}"
+    _queue_claude_sync_event(sync_message)
 
     _record_stat("tasks_closed")
     _mark_action_step_status(
@@ -1665,6 +2443,112 @@ async def record_card_decision(card_id: int, body: dict = Body(...)):
         "decision": (decision or "").strip().lower(),
         **result,
     }
+
+
+@app.post("/api/suggestions/{card_id}/deny")
+async def deny_suggestion(card_id: int, body: dict = Body(default={})):
+    conn = get_db()
+    try:
+        row = conn.execute("SELECT * FROM cards WHERE id = ?", [card_id]).fetchone()
+        if not row:
+            raise HTTPException(404, "card not found")
+        card = dict(row)
+        if card.get("source") != SUGGESTION_SOURCE:
+            raise HTTPException(400, "card is not a suggestion")
+        if card.get("status") != "pending":
+            raise HTTPException(400, "only pending suggestions can be denied")
+        conn.execute("UPDATE cards SET status = 'held' WHERE id = ?", [card_id])
+        conn.commit()
+    finally:
+        conn.close()
+
+    _stale_sources.add(SUGGESTION_SOURCE)
+    return {"card_id": card_id, "status": "held"}
+
+
+@app.post("/api/suggestions/{card_id}/approve")
+async def approve_suggestion(card_id: int, body: dict = Body(default={})):
+    conn = get_db()
+    try:
+        row = conn.execute("SELECT * FROM cards WHERE id = ?", [card_id]).fetchone()
+        if not row:
+            raise HTTPException(404, "card not found")
+        card = dict(row)
+        if card.get("source") != SUGGESTION_SOURCE:
+            raise HTTPException(400, "card is not a suggestion")
+        if card.get("status") != "pending":
+            raise HTTPException(400, "only pending suggestions can be approved")
+    finally:
+        conn.close()
+
+    decision_event_id = int(body.get("decision_event_id") or 0)
+    action_step_id = _require_approved_decision("card", str(card_id), "approve-suggestion", decision_event_id)
+    attempt_id = _start_execution_attempt(
+        "card",
+        str(card_id),
+        "approve-suggestion",
+        action_step_id=action_step_id,
+        metadata={"card_id": card_id, "source": SUGGESTION_SOURCE},
+    )
+
+    metadata = _card_analysis_metadata(card)
+    try:
+        task_number = _append_task_from_suggestion(card, metadata)
+        automation_draft_file = None
+        if metadata.get("category") == "automation":
+            automation_draft_file = _append_automation_draft(card, metadata, task_number)
+
+        sync_message = (
+            f"Dashboard approved suggestion #{card_id} and created Task #{task_number}. "
+            f"Re-read ~/.claude/eng-buddy/tasks/active-tasks.md before planning further work."
+        )
+        if automation_draft_file:
+            sync_message += f" Automation draft saved to {automation_draft_file}."
+        _queue_claude_sync_event(sync_message)
+
+        conn = get_db()
+        try:
+            execution_result = {
+                "task_number": task_number,
+                "automation_draft_file": automation_draft_file,
+            }
+            conn.execute(
+                """UPDATE cards
+                   SET status = 'completed',
+                       section = 'no-action',
+                       execution_status = 'completed',
+                       execution_result = ?,
+                       executed_at = datetime('now')
+                   WHERE id = ?""",
+                [json.dumps(execution_result), card_id],
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        _mark_action_step_status(
+            action_step_id,
+            "executed",
+            payload={"task_number": task_number, "automation_draft_file": automation_draft_file},
+        )
+        _finish_execution_attempt(
+            attempt_id,
+            "completed",
+            output=json.dumps({"task_number": task_number, "automation_draft_file": automation_draft_file}),
+        )
+        _record_stat("suggestions_approved")
+        _stale_sources.add(SUGGESTION_SOURCE)
+        return {
+            "card_id": card_id,
+            "status": "completed",
+            "task_number": task_number,
+            "automation_draft_file": automation_draft_file,
+            "decision_event_id": decision_event_id,
+            "action_step_id": action_step_id,
+        }
+    except Exception as exc:
+        _mark_action_step_status(action_step_id, "failed")
+        _finish_execution_attempt(attempt_id, "failed", error=str(exc))
+        raise
 
 
 @app.get("/api/cards/{card_id}/timeline")
@@ -2113,6 +2997,7 @@ async def execute_card(websocket: WebSocket, card_id: int):
     proposed = card.get("proposed_actions") or "[]"
     summary = card.get("summary", "")
     source = card.get("source", "")
+    metadata = _card_analysis_metadata(card)
     prompt = (
         f"You are eng-buddy executing a task from the queue.\n\n"
         f"Source: {source}\n"
@@ -2262,13 +3147,24 @@ async def refine_card(card_id: int, body: dict = Body(...)):
     else:
         history_turns = _history_to_turns(_fetch_chat_history(session_id))
 
-    system_context = (
-        f"You are eng-buddy helping to refine a task before execution.\n\n"
-        f"Source: {source}\nSummary: {summary}\n"
-        f"Current proposed actions:\n{proposed}\n\n"
-        f"The user wants to refine or adjust these actions. "
-        f"When they are satisfied, they will click Approve to execute."
-    )
+    if source == SUGGESTION_SOURCE:
+        system_context = (
+            f"You are eng-buddy helping refine a dashboard suggestion before approval.\n\n"
+            f"Source: {source}\nSummary: {summary}\n"
+            f"Category: {metadata.get('category', 'unknown')}\n"
+            f"Why now: {card.get('context_notes', '')}\n"
+            f"Current proposed actions:\n{proposed}\n\n"
+            f"Help sharpen the recommendation, evidence, and next step. "
+            f"When the user is satisfied, they will approve it to create follow-up artifacts."
+        )
+    else:
+        system_context = (
+            f"You are eng-buddy helping to refine a task before execution.\n\n"
+            f"Source: {source}\nSummary: {summary}\n"
+            f"Current proposed actions:\n{proposed}\n\n"
+            f"The user wants to refine or adjust these actions. "
+            f"When they are satisfied, they will click Approve to execute."
+        )
 
     conversation = system_context + "\n\n"
     for turn in history_turns:
@@ -2500,13 +3396,25 @@ async def open_session(card_id: int):
     proposed = card.get("proposed_actions") or "[]"
     summary = card.get("summary", "")
     source = card.get("source", "")
+    metadata = _card_analysis_metadata(card)
+    open_session_prompt = str(metadata.get("open_session_prompt", "")).strip()
 
-    context = (
-        f"eng-buddy task\n"
-        f"Source: {source}\nSummary: {summary}\n"
-        f"Proposed actions:\n{proposed}\n\n"
-        f"Work through this task with the user step by step."
-    )
+    if source == SUGGESTION_SOURCE and open_session_prompt:
+        context = (
+            f"eng-buddy suggestion review\n"
+            f"Source: {source}\nSummary: {summary}\n"
+            f"Suggestion category: {metadata.get('category', 'unknown')}\n"
+            f"Why now: {card.get('context_notes', '')}\n"
+            f"Evidence: {json.dumps(metadata.get('evidence', []), indent=2)}\n\n"
+            f"{open_session_prompt}\n"
+        )
+    else:
+        context = (
+            f"eng-buddy task\n"
+            f"Source: {source}\nSummary: {summary}\n"
+            f"Proposed actions:\n{proposed}\n\n"
+            f"Work through this task with the user step by step."
+        )
     session_id = _get_or_create_chat_session(
         scope="card_terminal_session",
         source=source or "unknown",
@@ -2822,6 +3730,15 @@ def _record_stat(metric, value=1, details=None):
     from datetime import date
     conn = get_db()
     try:
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS stats (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT NOT NULL,
+                metric TEXT NOT NULL,
+                value REAL DEFAULT 0,
+                details TEXT
+            )"""
+        )
         conn.execute(
             "INSERT INTO stats (date, metric, value, details) VALUES (?, ?, ?, ?)",
             [date.today().isoformat(), metric, value, details]

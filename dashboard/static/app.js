@@ -16,13 +16,25 @@ const knowledgeState = {
   query: '',
   selectedPath: '',
 };
+const suggestionState = {
+  lastAnalyzedAt: '',
+};
+const pollerState = {
+  pollers: [],
+  refreshInFlight: false,
+  countdownTimerId: null,
+  refreshTimerId: null,
+};
 
 // -- Helpers ------------------------------------------------------------------
 
 function timeAgo(ts) {
   if (!ts) return '';
-  const d = new Date(ts.replace(' ', 'T') + (ts.includes('Z') ? '' : 'Z'));
-  const diff = Math.floor((Date.now() - d) / 1000);
+  const normalized = String(ts).trim().replace(' ', 'T');
+  const hasZone = /(?:Z|[+-]\d{2}:\d{2})$/.test(normalized);
+  const d = new Date(hasZone ? normalized : `${normalized}Z`);
+  if (Number.isNaN(d.getTime())) return '';
+  const diff = Math.max(0, Math.floor((Date.now() - d.getTime()) / 1000));
   if (diff < 60) return `${diff}s ago`;
   if (diff < 3600) return `${Math.floor(diff/60)}m ago`;
   if (diff < 86400) return `${Math.floor(diff/3600)}h ago`;
@@ -61,6 +73,11 @@ function sectionDomId(name) {
   return String(name || 'section').toLowerCase().replace(/[^a-z0-9]+/g, '-');
 }
 
+function extractJiraKey(value) {
+  const match = String(value || '').toUpperCase().match(/\b[A-Z][A-Z0-9]+-\d+\b/);
+  return match ? match[0] : '';
+}
+
 function cacheIsFresh(entry) {
   return !!entry && (Date.now() - entry.fetchedAt) < TAB_CACHE_TTL_MS;
 }
@@ -77,9 +94,183 @@ function invalidateTabCache() {
   Object.keys(tabCache).forEach((key) => delete tabCache[key]);
 }
 
+function parseCalendarDate(value) {
+  if (!value) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    const [year, month, day] = value.split('-').map(Number);
+    return new Date(year, month - 1, day);
+  }
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function startOfLocalDay(value) {
+  const day = new Date(value);
+  day.setHours(0, 0, 0, 0);
+  return day;
+}
+
+function addDays(value, days) {
+  const copy = new Date(value);
+  copy.setDate(copy.getDate() + days);
+  return copy;
+}
+
+function getUpcomingWeekConfig(now = new Date()) {
+  const todayStart = startOfLocalDay(now);
+  const isSunday = todayStart.getDay() === 0;
+  const rangeStart = addDays(todayStart, 1);
+  const rangeEndExclusive = isSunday
+    ? addDays(todayStart, 8)
+    : addDays(todayStart, 7 - todayStart.getDay() + 1);
+
+  return {
+    todayStart,
+    tomorrowStart: addDays(todayStart, 1),
+    rangeStart,
+    rangeEndExclusive,
+    label: isSunday ? 'UPCOMING NEXT WEEK' : 'UPCOMING THIS WEEK',
+    emptyLabel: isSunday ? 'NO EVENTS NEXT WEEK' : 'NOTHING ELSE THIS WEEK',
+  };
+}
+
+function formatCalendarWhen(startValue, endValue) {
+  const start = parseCalendarDate(startValue);
+  const end = parseCalendarDate(endValue);
+
+  if (start) {
+    const dayLabel = start.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
+    if ((startValue || '').includes('T')) {
+      const startTime = start.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+      const endTime = end ? end.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '';
+      return `${dayLabel} ${startTime}${endTime ? ` - ${endTime}` : ''}`;
+    }
+    return `${dayLabel} ALL DAY`;
+  }
+
+  return 'TIME TBD';
+}
+
+function renderCalendarEvent(card) {
+  const actions = Array.isArray(card.proposed_actions) ? card.proposed_actions : [];
+  const event = actions[0] || {};
+  const context = card.context_notes ? escHtml(card.context_notes) : '';
+  const meetLink = event.hangout_link || '';
+  const attendees = (event.attendees || []).slice(0, 5).map(a => escHtml(a)).join(', ');
+  const isHighPrio = card.classification === 'high';
+  const title = escHtml(event.summary || card.summary || 'Untitled event');
+  const when = escHtml(formatCalendarWhen(event.start, event.end));
+
+  return `
+    <div class="calendar-event ${isHighPrio ? 'high-prio' : ''}">
+      <div class="event-time">${when}</div>
+      <div class="event-title">${title}</div>
+      ${context ? `<div class="event-context">${context}</div>` : ''}
+      ${attendees ? `<div class="event-attendees">WITH: ${attendees}</div>` : ''}
+      <div class="event-actions">
+        ${meetLink ? `<a href="${escHtml(meetLink)}" target="_blank" class="action-btn approve">JOIN</a>` : ''}
+        <button class="action-btn open-session" onclick="openSession(${card.id})">PREP NOTES</button>
+      </div>
+    </div>`;
+}
+
+function renderCalendarSection(title, cards, emptyLabel) {
+  const body = cards.length
+    ? cards.map(renderCalendarEvent).join('')
+    : `<div class="calendar-empty">${escHtml(emptyLabel)}</div>`;
+
+  return `
+    <div class="calendar-section">
+      <div class="section-header">
+        <span>${escHtml(title)}</span>
+        <span class="section-count">${cards.length}</span>
+      </div>
+      ${body}
+    </div>`;
+}
+
 function setCounts(counts = {}) {
   document.getElementById('count-pending').textContent = `${counts.pending || 0} pending`;
   document.getElementById('count-held').textContent = `${counts.held || 0} held`;
+}
+
+function formatCountdown(totalSeconds) {
+  const safeSeconds = Math.max(0, Math.ceil(Number(totalSeconds) || 0));
+  const hours = Math.floor(safeSeconds / 3600);
+  const minutes = Math.floor((safeSeconds % 3600) / 60);
+  const seconds = safeSeconds % 60;
+
+  if (hours > 0) {
+    return `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+  }
+
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+}
+
+function getPollerCountdownSeconds(poller) {
+  if (!poller || !poller.next_run_at) return null;
+
+  const intervalMs = Math.max(1000, Number(poller.interval_seconds || 0) * 1000);
+  let diffMs = new Date(poller.next_run_at).getTime() - Date.now();
+  if (!Number.isFinite(diffMs)) return null;
+
+  if (diffMs < 0 && intervalMs > 0) {
+    const catchUpCycles = Math.floor(Math.abs(diffMs) / intervalMs) + 1;
+    diffMs += catchUpCycles * intervalMs;
+  }
+
+  return Math.max(0, Math.ceil(diffMs / 1000));
+}
+
+function renderPollerTimers() {
+  const container = document.getElementById('poller-timers');
+  if (!container) return;
+
+  if (!pollerState.pollers.length) {
+    container.innerHTML = '';
+    return;
+  }
+
+  container.innerHTML = pollerState.pollers.map((poller) => {
+    const countdownSeconds = getPollerCountdownSeconds(poller);
+    const countdownLabel = countdownSeconds === null ? '--:--' : formatCountdown(countdownSeconds);
+    const lastSeen = poller.last_run_at ? timeAgo(poller.last_run_at) : 'never';
+    const health = poller.health || 'unknown';
+    const title = `Last run ${lastSeen}. Next fire in ${countdownLabel}.`;
+    return `
+      <span class="poller-badge ${health}" title="${escHtml(title)}">
+        <span class="poller-name">${escHtml((poller.label || poller.id || 'poller').toUpperCase())}</span>
+        <span class="poller-dot">•</span>
+        <span class="poller-countdown">${escHtml(countdownLabel)}</span>
+      </span>
+    `;
+  }).join('');
+}
+
+async function refreshPollerTimers() {
+  if (pollerState.refreshInFlight) return;
+  pollerState.refreshInFlight = true;
+
+  try {
+    const r = await fetch('/api/pollers/status');
+    if (!r.ok) throw new Error('Failed to load poller status');
+    const data = await r.json();
+    pollerState.pollers = Array.isArray(data.pollers) ? data.pollers : [];
+    renderPollerTimers();
+  } catch {
+    // Keep the last rendered state if the status endpoint briefly fails.
+  } finally {
+    pollerState.refreshInFlight = false;
+  }
+}
+
+function startPollerTimers() {
+  if (!pollerState.countdownTimerId) {
+    pollerState.countdownTimerId = setInterval(renderPollerTimers, 1000);
+  }
+  if (!pollerState.refreshTimerId) {
+    pollerState.refreshTimerId = setInterval(refreshPollerTimers, 30000);
+  }
 }
 
 async function requestDecision(entityType, entityId, action, decision = 'approved', rationale = '') {
@@ -113,39 +304,28 @@ async function captureFailureFeedback(entityType, entityId, action, errorMessage
 
 // -- Card rendering -----------------------------------------------------------
 
-function renderCard(card) {
+function renderCardActions(cardId) {
+  return `
+      <button class="action-btn open-session" onclick="openSession(${cardId})">OPEN SESSION</button>
+      <button class="action-btn refine" onclick="toggleRefine(${cardId})">REFINE</button>
+      <button class="action-btn hold" onclick="holdCard(${cardId})">HOLD</button>
+      <button class="action-btn approve" onclick="approveCard(${cardId})">APPROVE</button>
+      <button class="action-btn" onclick="closeCard(${cardId}, this)">CLOSE</button>
+      <button class="action-btn" onclick="writeCardToJira(${cardId}, this)">WRITE TO JIRA</button>
+      <button class="action-btn hold" onclick="saveCardToDailyLog(${cardId}, this)">SAVE TO DAILY LOG</button>
+  `;
+}
+
+function renderCardFoldout(card) {
   const actions = Array.isArray(card.proposed_actions)
     ? card.proposed_actions
     : [];
-  const actionCount = actions.length;
   const foldoutId = `foldout-${card.id}`;
   const xtermId = `xterm-${card.id}`;
   const refineId = `refine-${card.id}`;
-
   const actionsHtml = actions.map((a, i) => renderAction(a, i)).join('');
 
   return `
-  <div class="card ${card.status}" id="card-${card.id}" data-source="${card.source}" data-id="${card.id}">
-    <div class="card-header" onclick="toggleFoldout(${card.id})">
-      <div class="card-meta">
-        ${sourceBadge(card.source)}
-        ${classBadge(card.classification)}
-      </div>
-      <div class="card-summary">${escHtml(card.summary || '(no summary)')}</div>
-      <div class="card-time">${timeAgo(card.timestamp)}</div>
-      <div class="card-toggle" id="toggle-${card.id}">${actionCount} action${actionCount !== 1 ? 's' : ''} &#9660;</div>
-    </div>
-
-    <div class="card-actions">
-      <button class="action-btn open-session" onclick="openSession(${card.id})">OPEN SESSION</button>
-      <button class="action-btn refine" onclick="toggleRefine(${card.id})">REFINE</button>
-      <button class="action-btn hold" onclick="holdCard(${card.id})">HOLD</button>
-      <button class="action-btn approve" onclick="approveCard(${card.id})">APPROVE</button>
-      <button class="action-btn" onclick="closeCard(${card.id}, this)">CLOSE</button>
-      <button class="action-btn" onclick="writeCardToJira(${card.id}, this)">WRITE TO JIRA</button>
-      <button class="action-btn hold" onclick="saveCardToDailyLog(${card.id}, this)">SAVE TO DAILY LOG</button>
-    </div>
-
     <div class="card-foldout" id="${foldoutId}">
       <div class="proposed-actions" id="proposed-${card.id}">
         <h4>Proposed Actions</h4>
@@ -166,6 +346,91 @@ function renderCard(card) {
       </div>
 
       <div id="${xtermId}" class="xterm-container" style="display:none;"></div>
+    </div>
+  `;
+}
+
+function renderCard(card) {
+  const actions = Array.isArray(card.proposed_actions)
+    ? card.proposed_actions
+    : [];
+  const actionCount = actions.length;
+
+  return `
+  <div class="card ${card.status}" id="card-${card.id}" data-source="${card.source}" data-id="${card.id}">
+    <div class="card-header" onclick="toggleFoldout(${card.id})">
+      <div class="card-meta">
+        ${sourceBadge(card.source)}
+        ${classBadge(card.classification)}
+      </div>
+      <div class="card-summary">${escHtml(card.summary || '(no summary)')}</div>
+      <div class="card-time">${timeAgo(card.timestamp)}</div>
+      <div class="card-toggle" id="toggle-${card.id}">${actionCount} action${actionCount !== 1 ? 's' : ''} &#9660;</div>
+    </div>
+
+    <div class="card-actions">${renderCardActions(card.id)}</div>
+    ${renderCardFoldout(card)}
+  </div>`;
+}
+
+function renderSuggestionCard(card) {
+  const meta = card.analysis_metadata || {};
+  const evidence = Array.isArray(meta.evidence) ? meta.evidence : [];
+  const generatedFrom = Array.isArray(meta.generated_from) ? meta.generated_from : [];
+  const actions = Array.isArray(card.proposed_actions) ? card.proposed_actions : [];
+  const actionCount = actions.length;
+  const evidenceHtml = evidence.length
+    ? evidence.map((item) => `<div class="action-item"><div class="action-draft">${escHtml(item)}</div></div>`).join('')
+    : '<div class="section-empty">No evidence captured</div>';
+  const generatedHtml = generatedFrom.length
+    ? generatedFrom.map((item) => `<span class="badge cls-informational">${escHtml(item)}</span>`).join('')
+    : '<span class="badge cls-informational">No sources captured</span>';
+  const actionsHtml = actions.length
+    ? actions.map((a, i) => renderAction(a, i)).join('')
+    : '<div class="section-empty">No suggested follow-up captured</div>';
+
+  return `
+  <div class="card suggestion-card ${card.status}" id="card-${card.id}" data-source="${card.source}" data-id="${card.id}">
+    <div class="card-header" onclick="toggleFoldout(${card.id})">
+      <div class="card-meta">
+        ${sourceBadge(card.source)}
+        ${classBadge(meta.category || card.section || 'suggestion')}
+        ${classBadge(card.classification)}
+      </div>
+      <div class="card-summary">${escHtml(card.summary || '(no summary)')}</div>
+      <div class="card-time">${timeAgo(meta.last_analyzed_at || card.timestamp)}</div>
+      <div class="card-toggle" id="toggle-${card.id}">${actionCount} action${actionCount !== 1 ? 's' : ''} &#9660;</div>
+    </div>
+    ${card.context_notes ? `<div class="card-context">${escHtml(card.context_notes)}</div>` : ''}
+    <div class="card-actions">
+      <button class="action-btn open-session" onclick="openSession(${card.id})">OPEN SESSION</button>
+      <button class="action-btn refine" onclick="toggleRefine(${card.id})">REFINE</button>
+      <button class="action-btn hold" onclick="denySuggestionCard(${card.id})">DENY</button>
+      <button class="action-btn approve" onclick="approveSuggestionCard(${card.id})">APPROVE</button>
+    </div>
+    <div class="card-foldout" id="foldout-${card.id}">
+      <div class="proposed-actions">
+        <h4>Evidence</h4>
+        ${evidenceHtml}
+      </div>
+      <div class="proposed-actions">
+        <h4>Suggested Follow-Up</h4>
+        ${actionsHtml}
+      </div>
+      <div class="card-context">GENERATED FROM: ${generatedHtml}</div>
+      <div id="refine-${card.id}" style="display:none; margin-top:16px;">
+        <div class="refine-panel">
+          <div class="proposed-actions"><h4>Refine</h4></div>
+          <div class="refine-history" id="refine-history-${card.id}"></div>
+          <div class="refine-input-row">
+            <textarea class="refine-input" id="refine-input-${card.id}"
+              placeholder="e.g. tighten the recommendation and call out rollout risks"
+              onkeydown="handleRefineKey(event, ${card.id})"></textarea>
+            <button class="action-btn" onclick="sendRefine(${card.id})">SEND</button>
+          </div>
+        </div>
+      </div>
+      <div id="xterm-${card.id}" class="xterm-container" style="display:none;"></div>
     </div>
   </div>`;
 }
@@ -328,34 +593,41 @@ async function loadCalendarView(options = {}) {
     const r = await fetch('/api/cards?source=calendar');
     const data = await r.json();
 
-    if (!data.cards.length) {
-      const html = '<div style="color:#444;padding:40px;text-align:center;letter-spacing:4px">NO EVENTS TODAY</div>';
-      cacheView(cacheKey, { html });
-      if (activeFilter === 'calendar') queue.innerHTML = html;
-      return;
-    }
+    const upcomingConfig = getUpcomingWeekConfig();
+    const todayCards = [];
+    const upcomingWeekCards = [];
 
-    const eventsHtml = data.cards.map(card => {
+    data.cards.forEach((card) => {
       const actions = Array.isArray(card.proposed_actions) ? card.proposed_actions : [];
       const event = actions[0] || {};
-      const context = card.context_notes ? escHtml(card.context_notes) : '';
-      const meetLink = event.hangout_link || '';
-      const attendees = (event.attendees || []).slice(0, 5).map(a => escHtml(a)).join(', ');
-      const isHighPrio = card.classification === 'high';
+      const eventStart = parseCalendarDate(event.start || card.timestamp);
+      if (!eventStart) return;
 
-      return `
-        <div class="calendar-event ${isHighPrio ? 'high-prio' : ''}">
-          <div class="event-time">${escHtml(card.summary || '')}</div>
-          ${context ? `<div class="event-context">${context}</div>` : ''}
-          ${attendees ? `<div class="event-attendees">WITH: ${attendees}</div>` : ''}
-          <div class="event-actions">
-            ${meetLink ? `<a href="${escHtml(meetLink)}" target="_blank" class="action-btn approve">JOIN</a>` : ''}
-            <button class="action-btn open-session" onclick="openSession(${card.id})">PREP NOTES</button>
-          </div>
-        </div>`;
-    }).join('');
+      const eventDay = startOfLocalDay(eventStart);
+      if (eventDay.getTime() === upcomingConfig.todayStart.getTime()) {
+        todayCards.push(card);
+      } else if (
+        eventDay >= upcomingConfig.rangeStart &&
+        eventDay < upcomingConfig.rangeEndExclusive
+      ) {
+        upcomingWeekCards.push(card);
+      }
+    });
 
-    const html = `<div class="calendar-agenda"><div class="section-header"><span>TODAY'S AGENDA</span><span class="section-count">${data.cards.length}</span></div>${eventsHtml}</div>`;
+    const byStartTime = (a, b) => {
+      const aStart = parseCalendarDate((Array.isArray(a.proposed_actions) ? a.proposed_actions[0] : null)?.start || a.timestamp);
+      const bStart = parseCalendarDate((Array.isArray(b.proposed_actions) ? b.proposed_actions[0] : null)?.start || b.timestamp);
+      return (aStart?.getTime() || 0) - (bStart?.getTime() || 0);
+    };
+
+    todayCards.sort(byStartTime);
+    upcomingWeekCards.sort(byStartTime);
+
+    const html = `
+      <div class="calendar-agenda">
+        ${renderCalendarSection("TODAY'S AGENDA", todayCards, 'NO EVENTS TODAY')}
+        ${renderCalendarSection(upcomingConfig.label, upcomingWeekCards, upcomingConfig.emptyLabel)}
+      </div>`;
     cacheView(cacheKey, { html });
     if (activeFilter === 'calendar') queue.innerHTML = html;
   } catch (e) {
@@ -617,6 +889,48 @@ async function approveCard(id) {
   }
 }
 
+async function approveSuggestionCard(id) {
+  const approved = window.confirm(`Approve suggestion #${id} and create follow-up artifacts?`);
+  if (!approved) return;
+  const rationale = window.prompt('Approval note (optional):', '') || '';
+  try {
+    const decision = await requestDecision('card', id, 'approve-suggestion', 'approved', rationale);
+    const r = await fetch(`/api/suggestions/${id}/approve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision_event_id: decision.decision_event_id }),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail || 'Suggestion approval failed');
+    invalidateTabCache();
+    await loadSuggestionsView({ forceRefresh: true });
+    const automationNote = data.automation_draft_file ? ' and automation draft' : '';
+    alert(`Suggestion #${id}: created Task #${data.task_number}${automationNote}.`);
+  } catch (e) {
+    await captureFailureFeedback('card', id, 'approve-suggestion', e.message);
+    alert(`Suggestion #${id}: ${e.message}`);
+  }
+}
+
+async function denySuggestionCard(id) {
+  const rationale = window.prompt('Why deny this suggestion? (optional)', '') || '';
+  try {
+    await requestDecision('card', id, 'deny-suggestion', 'rejected', rationale);
+    const r = await fetch(`/api/suggestions/${id}/deny`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rationale }),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail || 'Suggestion deny failed');
+    invalidateTabCache();
+    await loadSuggestionsView({ forceRefresh: true });
+  } catch (e) {
+    await captureFailureFeedback('card', id, 'deny-suggestion', e.message);
+    alert(`Suggestion #${id}: ${e.message}`);
+  }
+}
+
 async function openSession(id) {
   await fetch(`/api/cards/${id}/open-session`, { method: 'POST' });
 }
@@ -782,30 +1096,84 @@ async function sendRefine(id) {
 
 // -- Jira + Tasks Views -------------------------------------------------------
 
-function statusColor(status) {
-  const s = (status || '').toLowerCase();
-  if (s.includes('done')) return 'var(--fresh)';
-  if (s.includes('progress') || s.includes('review')) return 'var(--jira)';
-  return 'var(--muted)';
+function extractJiraKeyFromCard(card) {
+  const candidates = [
+    card.summary,
+    card.context_notes,
+    ...(Array.isArray(card.proposed_actions) ? card.proposed_actions.flatMap((action) => [action?.url, action?.draft]) : []),
+  ];
+  return candidates.map(extractJiraKey).find(Boolean) || '';
 }
 
-function renderJiraIssue(issue) {
+function buildJiraCardLookup(cards) {
+  const lookup = {};
+  cards.forEach((card) => {
+    const key = extractJiraKeyFromCard(card);
+    if (key && !lookup[key]) {
+      lookup[key] = card;
+    }
+  });
+  return lookup;
+}
+
+function renderJiraIssueFallback(issue) {
   const labels = (issue.labels || []).map(l => `<span class="jira-label">${escHtml(l)}</span>`).join('');
   const prio = (issue.priority || '').toLowerCase();
-  const prioIcon = prio.includes('high') ? '!!!' : prio.includes('low') ? '.' : '!!';
+  const priorityClass = prio.includes('high') ? 'cls-urgent' : 'cls-informational';
   return `
-    <div class="jira-issue" data-key="${issue.key}">
-      <div class="jira-issue-key">${escHtml(issue.key)}</div>
-      <div class="jira-issue-summary">${escHtml(issue.summary)}</div>
-      <div class="jira-issue-meta">
-        <span class="jira-status" style="color:${statusColor(issue.status)}">${escHtml(issue.status)}</span>
-        <span class="jira-prio">${prioIcon}</span>
-        ${labels}
+    <div class="card jira-card jira-card-unsynced" data-key="${escHtml(issue.key || '')}">
+      <div class="card-header">
+        <div class="card-meta">
+          ${sourceBadge('jira')}
+          <span class="badge cls-informational">${escHtml(issue.key || 'JIRA')}</span>
+          <span class="badge cls-informational">${escHtml(issue.status || 'Unknown').toUpperCase()}</span>
+          <span class="badge ${priorityClass}">${escHtml(issue.priority || 'unknown').toUpperCase()}</span>
+        </div>
+        <div class="card-summary">${escHtml(issue.summary || '(no summary)')}</div>
+        <div class="card-time">${timeAgo(issue.updated)}</div>
       </div>
+      ${labels ? `<div class="jira-card-details"><div class="jira-issue-meta">${labels}</div></div>` : ''}
+      <div class="card-context jira-card-context">This Jira issue is visible in the sprint, but it has not been synced to a dashboard card yet, so card actions are not available.</div>
     </div>`;
 }
 
-function renderStatusSections(sectionMap, order, emptyLabel) {
+function renderJiraIssueCard(issue, linkedCard) {
+  if (!linkedCard || linkedCard.id == null) {
+    return renderJiraIssueFallback(issue);
+  }
+
+  const labels = (issue.labels || []).map((label) => `<span class="jira-label">${escHtml(label)}</span>`).join('');
+  const actionCount = Array.isArray(linkedCard.proposed_actions) ? linkedCard.proposed_actions.length : 0;
+  const mergedSummary = issue.summary || linkedCard.summary || '(no summary)';
+  const mergedTime = issue.updated || linkedCard.timestamp;
+  const priority = issue.priority || linkedCard.classification || 'unknown';
+  const context = linkedCard.context_notes ? `<div class="card-context jira-card-context">${escHtml(linkedCard.context_notes)}</div>` : '';
+  const priorityClass = String(priority).toLowerCase().includes('high') ? 'cls-urgent' : 'cls-informational';
+
+  return `
+    <div class="card jira-card ${linkedCard.status}" id="card-${linkedCard.id}" data-source="${linkedCard.source}" data-id="${linkedCard.id}" data-key="${escHtml(issue.key || '')}">
+      <div class="card-header" onclick="toggleFoldout(${linkedCard.id})">
+        <div class="card-meta">
+          ${sourceBadge('jira')}
+          <span class="badge cls-informational">${escHtml(issue.key || extractJiraKeyFromCard(linkedCard) || 'JIRA')}</span>
+          <span class="badge cls-informational">${escHtml(issue.status || 'Unknown').toUpperCase()}</span>
+          <span class="badge ${priorityClass}">${escHtml(priority).toUpperCase()}</span>
+        </div>
+        <div class="card-summary">${escHtml(mergedSummary)}</div>
+        <div class="card-time">${timeAgo(mergedTime)}</div>
+        <div class="card-toggle" id="toggle-${linkedCard.id}">${actionCount} action${actionCount !== 1 ? 's' : ''} &#9660;</div>
+      </div>
+      ${(labels || context) ? `<div class="jira-card-details">
+        ${labels ? `<div class="jira-issue-meta">${labels}</div>` : ''}
+        ${context}
+      </div>` : ''}
+      <div class="card-actions jira-card-actions">${renderCardActions(linkedCard.id)}</div>
+      ${renderCardFoldout(linkedCard)}
+    </div>
+  `;
+}
+
+function renderStatusSections(sectionMap, order, jiraCardLookup, emptyLabel) {
   if (!order.length) {
     return `<div class="section-empty">${emptyLabel}</div>`;
   }
@@ -821,7 +1189,7 @@ function renderStatusSections(sectionMap, order, emptyLabel) {
           <span class="section-toggle" id="toggle-${sectionDomId(sectionKey)}">&#9660;</span>
         </div>
         <div class="section-body" id="section-${sectionDomId(sectionKey)}">
-          ${items.map(renderJiraIssue).join('') || '<div class="section-empty">None</div>'}
+          ${items.map((issue) => renderJiraIssueCard(issue, jiraCardLookup[extractJiraKey(issue.key)])).join('') || '<div class="section-empty">None</div>'}
         </div>
       </div>
     `;
@@ -834,6 +1202,7 @@ async function loadJiraStatusView(options = {}) {
   const cached = getCachedView(cacheKey);
 
   if (cached) {
+    setCounts(cached.counts || {});
     queue.innerHTML = cached.html;
     if (!options.forceRefresh && cacheIsFresh(cached)) return;
   } else {
@@ -841,12 +1210,19 @@ async function loadJiraStatusView(options = {}) {
   }
 
   try {
-    const r = await fetch(`/api/jira/sprint?refresh=${options.forceRefresh ? 'true' : 'false'}`);
-    const data = await r.json();
+    const [sprintR, cardsR] = await Promise.all([
+      fetch(`/api/jira/sprint?refresh=${options.forceRefresh ? 'true' : 'false'}`),
+      fetch('/api/cards?source=jira&status=all'),
+    ]);
+    const data = await sprintR.json();
+    const cardsData = await cardsR.json();
     const sectionMap = data.by_status || {};
     const order = data.status_order || Object.keys(sectionMap);
-    const html = renderStatusSections(sectionMap, order, 'No Jira issues found');
-    cacheView(cacheKey, { html });
+    const jiraCards = Array.isArray(cardsData.cards) ? cardsData.cards : [];
+    const jiraCardLookup = buildJiraCardLookup(jiraCards);
+    const html = renderStatusSections(sectionMap, order, jiraCardLookup, 'No Jira issues found');
+    setCounts(cardsData.counts || {});
+    cacheView(cacheKey, { html, counts: cardsData.counts || {} });
     if (activeFilter === 'jira') queue.innerHTML = html;
   } catch (e) {
     if (!cached) {
@@ -1191,6 +1567,102 @@ function selectKnowledgeDoc(path) {
   loadKnowledgeView({ forceRefresh: true });
 }
 
+async function loadSuggestionsView(options = {}) {
+  const cacheKey = 'suggestions';
+  const queue = document.getElementById('queue');
+  const cached = getCachedView(cacheKey);
+  const shouldBypassCache = !!options.forceRefresh;
+  const shouldRegenerate = !!options.regenerate;
+  if (cached) {
+    queue.innerHTML = cached.html;
+    if (!shouldBypassCache && cacheIsFresh(cached)) return;
+  } else {
+    queue.innerHTML = '<div style="color:#666;padding:40px;text-align:center;letter-spacing:4px">LOADING SUGGESTIONS...</div>';
+  }
+
+  try {
+    const refreshParam = shouldRegenerate ? 'true' : 'false';
+    const r = await fetch(`/api/suggestions?refresh=${refreshParam}`);
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail || 'Failed to load suggestions');
+
+    suggestionState.lastAnalyzedAt = data.last_analyzed_at || '';
+    const sections = Array.isArray(data.sections) ? data.sections : [];
+    const sectionHtml = sections.map((section) => {
+      const cards = Array.isArray(section.cards) ? section.cards : [];
+      return `
+        <div class="section-group">
+          <div class="section-header">
+            <span>${escHtml(section.label || section.key || 'Suggestions')}</span>
+            <span class="section-count">${cards.length}</span>
+          </div>
+          <div class="section-body">
+            ${cards.length ? cards.map(renderSuggestionCard).join('') : '<div class="section-empty">No active suggestions in this section</div>'}
+          </div>
+        </div>
+      `;
+    }).join('');
+
+    const heldCards = Array.isArray(data.held) ? data.held : [];
+    const heldHtml = `
+      <div class="section-group">
+        <div class="section-header no-action" onclick="toggleSection('suggestions-held')">
+          <span>HELD / DENIED</span>
+          <span class="section-count">${heldCards.length}</span>
+          <span class="section-toggle" id="toggle-suggestions-held">&#9654;</span>
+        </div>
+        <div class="section-body" id="section-suggestions-held" style="display:none;">
+          ${heldCards.length ? heldCards.map(renderSuggestionCard).join('') : '<div class="section-empty">No denied suggestions</div>'}
+        </div>
+      </div>
+    `;
+
+    const counts = sections.map((section) => `<span class="badge cls-informational">${escHtml(section.label)}: ${escHtml(section.count || 0)}</span>`).join('');
+    const html = `
+      <div class="section-group">
+        <div class="section-header">
+          <span>SUGGESTIONS</span>
+          <span class="section-count">${sections.reduce((sum, section) => sum + Number(section.count || 0), 0)}</span>
+        </div>
+        <div class="section-body">
+          <div class="card-actions" style="padding:0 0 12px 0;">
+            <button class="action-btn approve" onclick="refreshSuggestions(this)">REFRESH</button>
+          </div>
+          <div class="card-context">
+            LAST ANALYZED: ${escHtml(suggestionState.lastAnalyzedAt ? timeAgo(suggestionState.lastAnalyzedAt) : 'never')}
+          </div>
+          <div class="card-context">${counts || '<span class="badge cls-informational">No suggestions yet</span>'}</div>
+        </div>
+      </div>
+      ${sectionHtml}
+      ${heldHtml}
+    `;
+
+    cacheView(cacheKey, { html });
+    if (activeFilter === 'suggestions') queue.innerHTML = html;
+  } catch (e) {
+    if (!cached) {
+      queue.innerHTML = `<div style="color:#ea4335;padding:40px;text-align:center;">Failed to load suggestions: ${escHtml(e.message)}</div>`;
+    }
+  }
+}
+
+async function refreshSuggestions(btn) {
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'REFRESHING...';
+  }
+  try {
+    invalidateTabCache();
+    await loadSuggestionsView({ forceRefresh: true, regenerate: true });
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = 'REFRESH';
+    }
+  }
+}
+
 function toggleTaskFoldout(domId) {
   const foldout = document.getElementById(`task-foldout-${domId}`);
   const toggle = document.getElementById(`task-toggle-${domId}`);
@@ -1312,7 +1784,7 @@ async function openTaskSession(taskNumber, btn) {
 async function closeTask(taskNumber, btn) {
   const confirmed = window.confirm(`Mark Task #${taskNumber} as completed?`);
   if (!confirmed) return;
-  const note = window.prompt('Optional close note (saved in API response only):', '') || '';
+  const note = window.prompt('Optional close note (saved to task state, daily log, and decision history):', '') || '';
   if (btn) {
     btn.disabled = true;
     btn.textContent = 'CLOSING...';
@@ -1481,6 +1953,8 @@ document.querySelectorAll('.filter-btn[data-source]').forEach(btn => {
       loadLearningsView();
     } else if (activeFilter === 'knowledge') {
       loadKnowledgeView();
+    } else if (activeFilter === 'suggestions') {
+      loadSuggestionsView();
     } else {
       loadQueue(activeFilter);
     }
@@ -1496,6 +1970,9 @@ function connectSSE() {
     try {
       const { source } = JSON.parse(e.data);
       if (source) invalidateTabCache();
+      if (source === 'suggestions' && activeFilter === 'suggestions') {
+        loadSuggestionsView({ forceRefresh: true });
+      }
     } catch {}
   });
 
@@ -1571,9 +2048,14 @@ if (restartBtn) {
 // -- Init ---------------------------------------------------------------------
 
 async function init() {
-  loadQueue();
+  await Promise.all([
+    loadQueue(),
+    loadTerminalSetting(),
+    refreshPollerTimers(),
+  ]);
+  startPollerTimers();
+  updateCounts();
   connectSSE();
-  loadTerminalSetting();
 
   // Show briefing on first load of the day
   const today = new Date().toISOString().slice(0, 10);

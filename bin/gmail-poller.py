@@ -80,7 +80,7 @@ def get_token():
 def gmail_get(path, params=None, token=None):
     url = f"{GMAIL_BASE}/{path}"
     if params:
-        url += "?" + urllib.parse.urlencode(params)
+        url += "?" + urllib.parse.urlencode(params, doseq=True)
     req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
@@ -97,7 +97,10 @@ def gmail_get(path, params=None, token=None):
 def get_message(msg_id, token):
     return gmail_get(
         f"messages/{msg_id}",
-        {"format": "metadata", "metadataHeaders": "From,To,Subject,Date"},
+        {
+            "format": "metadata",
+            "metadataHeaders": ["From", "To", "Subject", "Date"],
+        },
         token=token,
     )
 
@@ -108,6 +111,20 @@ def extract_header(msg, name):
         if h["name"].lower() == name.lower():
             return h["value"]
     return ""
+
+
+def extract_received_at(msg):
+    """Prefer Gmail's internal delivery timestamp when available."""
+    internal_date = msg.get("internalDate")
+    try:
+        if internal_date:
+            return datetime.fromtimestamp(
+                int(internal_date) / 1000,
+                tz=timezone.utc,
+            ).isoformat()
+    except (TypeError, ValueError):
+        pass
+    return datetime.now(timezone.utc).isoformat()
 
 
 # ---------------------------------------------------------------------------
@@ -169,15 +186,55 @@ def db_connect():
     return sqlite3.connect(DB_PATH)
 
 
+def build_card_summary(item):
+    sender = (item.get("from") or item.get("sender_email") or "Unknown sender").strip()
+    subject = (item.get("subject") or "(no subject)").strip()
+    return f"{sender}: {subject}"
+
+
+def ensure_unique_summary(conn, summary, item):
+    exists = conn.execute(
+        "SELECT 1 FROM cards WHERE source = 'gmail' AND summary = ?",
+        (summary,),
+    ).fetchone()
+    if not exists:
+        return summary
+
+    received_at = item.get("received_at") or datetime.now(timezone.utc).isoformat()
+    try:
+        received_label = datetime.fromisoformat(
+            received_at.replace("Z", "+00:00")
+        ).astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M")
+    except ValueError:
+        received_label = "duplicate"
+
+    msg_tail = (item.get("id") or "")[-6:]
+    suffix = f" [{received_label}"
+    if msg_tail:
+        suffix += f" {msg_tail}"
+    suffix += "]"
+
+    candidate = f"{summary}{suffix}"
+    counter = 2
+    while conn.execute(
+        "SELECT 1 FROM cards WHERE source = 'gmail' AND summary = ?",
+        (candidate,),
+    ).fetchone():
+        candidate = f"{summary}{suffix} #{counter}"
+        counter += 1
+    return candidate
+
+
 def write_card_to_db(conn, item, classification_result):
     """Insert one classified email card into inbox.db."""
     if conn is None:
-        return
+        return False
 
     section        = classification_result.get("section", "noise")
     classification = classification_result.get("classification", "unknown")
     draft_response = classification_result.get("draft_response")
     context_notes  = classification_result.get("context_notes")
+    summary = ensure_unique_summary(conn, build_card_summary(item), item)
 
     proposed_actions = json.dumps([{
         "type":      "reply_to_email",
@@ -188,14 +245,15 @@ def write_card_to_db(conn, item, classification_result):
         "subject":   item.get("subject", ""),
     }])
 
+    before = conn.total_changes
     conn.execute(
         """INSERT OR IGNORE INTO cards
            (source, timestamp, summary, classification, section, draft_response,
             context_notes, status, proposed_actions, execution_status)
            VALUES ('gmail', ?, ?, ?, ?, ?, ?, 'pending', ?, 'not_run')""",
         (
-            datetime.now(timezone.utc).isoformat(),
-            f"{item['from']}: {item['subject']}",
+            item.get("received_at") or datetime.now(timezone.utc).isoformat(),
+            summary,
             classification,
             section,
             draft_response,
@@ -203,6 +261,7 @@ def write_card_to_db(conn, item, classification_result):
             proposed_actions,
         ),
     )
+    return conn.total_changes > before
 
 
 def update_filter_suggestions(conn, noise_items):
@@ -335,10 +394,10 @@ def main():
     state        = load_state()
     token        = get_token()
     already_seen = set(state.get("seen_msg_ids", []))
-    new_seen     = set()
+    processed_seen = set()
 
-    # Scan inbox + sent emails from last 3 days
-    query = "(in:inbox OR in:sent) newer_than:3d"
+    # Scan inbox emails from the last 3 days.
+    query = "in:inbox newer_than:3d"
     result = gmail_get("messages", {"q": query, "maxResults": 50}, token=token)
     messages = result.get("messages", [])
 
@@ -354,8 +413,6 @@ def main():
         msg_id = msg_ref["id"]
         if msg_id in already_seen:
             continue
-
-        new_seen.add(msg_id)
 
         try:
             msg = get_message(msg_id, token)
@@ -380,6 +437,7 @@ def main():
             "snippet":      snippet[:500],
             "labels":       labels,
             "thread_id":    msg_thread,
+            "received_at":  extract_received_at(msg),
         })
 
         time.sleep(0.15)  # gentle rate limiting
@@ -387,7 +445,7 @@ def main():
     if not batch_items:
         print(f"[{datetime.now().strftime('%H:%M')}] No new emails (all already seen)")
         state["last_check_ts"] = int(datetime.now().timestamp())
-        state["seen_msg_ids"]  = list((already_seen | new_seen))[-500:]
+        state["seen_msg_ids"]  = list(already_seen)[-500:]
         save_state(state)
         return
 
@@ -413,7 +471,8 @@ def main():
                 "context_notes":  None,
             })
 
-            write_card_to_db(conn, item, cl_result)
+            if write_card_to_db(conn, item, cl_result):
+                processed_seen.add(msg_id)
 
             section = cl_result.get("section", "noise")
             if section == "action-needed":
@@ -440,6 +499,7 @@ def main():
                 alerts.append((item, cl_result))
             else:
                 noise_items.append(item)
+            processed_seen.add(msg_id)
 
     # Notifications for action-needed emails
     for item, cl_result in action_needed:
@@ -489,7 +549,7 @@ def main():
 
     # Update state
     state["last_check_ts"] = int(datetime.now().timestamp())
-    state["seen_msg_ids"]  = list((already_seen | new_seen))[-500:]
+    state["seen_msg_ids"]  = list((already_seen | processed_seen))[-500:]
     save_state(state)
 
 
