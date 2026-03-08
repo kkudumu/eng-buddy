@@ -720,6 +720,33 @@ document.getElementById('terminal-select').addEventListener('change', async (e) 
   });
 });
 
+// -- Restart ------------------------------------------------------------------
+
+document.getElementById('restart-btn').addEventListener('click', async () => {
+  const btn = document.getElementById('restart-btn');
+  btn.textContent = 'RESTARTING...';
+  btn.classList.add('restarting');
+  try {
+    await fetch('/api/restart', { method: 'POST' });
+  } catch {}
+  // Poll until the server comes back
+  const poll = setInterval(async () => {
+    try {
+      const r = await fetch('/api/health');
+      if (r.ok) {
+        clearInterval(poll);
+        location.reload();
+      }
+    } catch {}
+  }, 1000);
+  // Safety timeout — stop polling after 30s
+  setTimeout(() => {
+    clearInterval(poll);
+    btn.textContent = 'RESTART';
+    btn.classList.remove('restarting');
+  }, 30000);
+});
+
 // -- Init ---------------------------------------------------------------------
 
 async function init() {

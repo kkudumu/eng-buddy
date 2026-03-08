@@ -54,6 +54,39 @@ async def root():
 async def health():
     return {"status": "ok"}
 
+
+@app.post("/api/restart")
+async def restart_server():
+    """Restart the dashboard: spawn start.sh after a short delay so this process can exit."""
+    import signal
+    start_sh = Path(__file__).parent / "start.sh"
+    if not start_sh.exists():
+        raise HTTPException(500, "start.sh not found")
+
+    def _restart():
+        import time
+        time.sleep(0.3)  # Let the HTTP response flush
+        # Write a tiny wrapper that waits for us to die, then launches fresh
+        restart_script = (
+            "#!/bin/bash\n"
+            f"while curl -s http://127.0.0.1:7777/api/health >/dev/null 2>&1; do sleep 0.2; done\n"
+            f'cd "{start_sh.parent}" && bash "{start_sh}" --background\n'
+        )
+        tmp = Path.home() / ".claude" / "eng-buddy" / ".restart.sh"
+        tmp.write_text(restart_script)
+        tmp.chmod(0o755)
+        subprocess.Popen(
+            ["/bin/bash", str(tmp)],
+            start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        # Now kill ourselves so the restart script can proceed
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    threading.Thread(target=_restart, daemon=True).start()
+    return {"status": "restarting"}
+
 @app.get("/api/cards")
 async def get_cards(source: str = None, status: str = "pending", section: str = None):
     conn = get_db()
