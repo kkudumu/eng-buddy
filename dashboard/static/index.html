@@ -41,9 +41,26 @@
     <button class="filter-btn" data-source="daily">DAILY</button>
     <button class="filter-btn" data-source="learnings">LEARNINGS</button>
     <button class="filter-btn" data-source="knowledge">KNOWLEDGE</button>
+    <button class="filter-btn" data-source="suggestions">SUGGESTIONS</button>
   </nav>
 
   <main id="queue"></main>
+
+  <aside id="debug-drawer" class="debug-drawer collapsed" aria-live="polite">
+    <button id="debug-drawer-toggle" class="debug-drawer-toggle" type="button" aria-expanded="false">
+      <span>DEBUG PANEL</span>
+      <span id="debug-drawer-summary">0 logs / 0 errors</span>
+    </button>
+    <div id="debug-drawer-body" class="debug-drawer-body">
+      <div class="debug-drawer-toolbar">
+        <div class="debug-drawer-title">LIVE DASHBOARD LOGS</div>
+        <button class="action-btn" type="button" onclick="clearDebugLogs()">CLEAR</button>
+      </div>
+      <div id="debug-drawer-stream" class="debug-drawer-stream">
+        <div class="debug-empty">No debug events yet</div>
+      </div>
+    </div>
+  </aside>
 
 <div id="briefing-overlay" class="briefing-overlay" style="display:none;">
   <div class="briefing-modal" id="briefing-content"></div>

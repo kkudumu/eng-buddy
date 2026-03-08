@@ -16,18 +16,29 @@ const knowledgeState = {
   query: '',
   selectedPath: '',
 };
+const suggestionState = {
+  lastAnalyzedAt: '',
+};
 const pollerState = {
   pollers: [],
   refreshInFlight: false,
   countdownTimerId: null,
   refreshTimerId: null,
 };
+const debugDrawerState = {
+  entries: [],
+  isOpen: false,
+  maxEntries: 150,
+  nextId: 1,
+};
 
 // -- Helpers ------------------------------------------------------------------
 
 function timeAgo(ts) {
   if (!ts) return '';
-  const d = new Date(String(ts).trim().replace(' ', 'T'));
+  const normalized = String(ts).trim().replace(' ', 'T');
+  const hasZone = /(?:Z|[+-]\d{2}:\d{2})$/.test(normalized);
+  const d = new Date(hasZone ? normalized : `${normalized}Z`);
   if (Number.isNaN(d.getTime())) return '';
   const diff = Math.max(0, Math.floor((Date.now() - d.getTime()) / 1000));
   if (diff < 60) return `${diff}s ago`;
@@ -121,6 +132,7 @@ function getUpcomingWeekConfig(now = new Date()) {
 
   return {
     todayStart,
+    tomorrowStart: addDays(todayStart, 1),
     rangeStart,
     rangeEndExclusive,
     label: isSunday ? 'UPCOMING NEXT WEEK' : 'UPCOMING THIS WEEK',
@@ -252,7 +264,7 @@ async function refreshPollerTimers() {
     pollerState.pollers = Array.isArray(data.pollers) ? data.pollers : [];
     renderPollerTimers();
   } catch {
-    // Leave the last-rendered timers in place if the status fetch fails.
+    // Keep the last rendered state if the status endpoint briefly fails.
   } finally {
     pollerState.refreshInFlight = false;
   }
@@ -266,6 +278,183 @@ function startPollerTimers() {
     pollerState.refreshTimerId = setInterval(refreshPollerTimers, 30000);
   }
 }
+
+function activeDebugScope() {
+  return (activeFilter || 'all').toUpperCase();
+}
+
+function formatDebugTime(timestamp) {
+  const parsed = new Date(timestamp);
+  if (Number.isNaN(parsed.getTime())) return '--:--:--';
+  return parsed.toLocaleTimeString([], { hour12: false });
+}
+
+function updateDebugDrawerSummary() {
+  const summary = document.getElementById('debug-drawer-summary');
+  if (!summary) return;
+  const errorCount = debugDrawerState.entries.filter((entry) => entry.level === 'error').length;
+  summary.textContent = `${debugDrawerState.entries.length} logs / ${errorCount} errors`;
+}
+
+function renderDebugDrawer() {
+  const drawer = document.getElementById('debug-drawer');
+  const toggle = document.getElementById('debug-drawer-toggle');
+  const stream = document.getElementById('debug-drawer-stream');
+  if (!drawer || !toggle || !stream) return;
+
+  drawer.classList.toggle('collapsed', !debugDrawerState.isOpen);
+  toggle.setAttribute('aria-expanded', String(debugDrawerState.isOpen));
+  updateDebugDrawerSummary();
+
+  if (!debugDrawerState.entries.length) {
+    stream.innerHTML = '<div class="debug-empty">No debug events yet</div>';
+    return;
+  }
+
+  stream.innerHTML = debugDrawerState.entries
+    .slice()
+    .reverse()
+    .map((entry) => `
+      <div class="debug-log-row level-${escHtml(entry.level)}">
+        <div class="debug-log-time">${escHtml(formatDebugTime(entry.timestamp))}</div>
+        <div class="debug-log-level">${escHtml(entry.level.toUpperCase())}</div>
+        <div class="debug-log-scope">${escHtml(entry.scope)}</div>
+        <div class="debug-log-message">${escHtml(entry.message)}</div>
+        <div class="debug-log-actions">
+          ${entry.level === 'error'
+            ? `<button class="action-btn hold" type="button" onclick="sendDebugLogToClaude(${entry.id}, this)" ${entry.sentToClaude ? 'disabled' : ''}>${entry.sentToClaude ? 'SENT TO CLAUDE' : 'SEND TO CLAUDE'}</button>`
+            : ''
+          }
+        </div>
+      </div>
+    `)
+    .join('');
+}
+
+function recordDebugEvent(level, message, details = {}) {
+  const normalizedLevel = level === 'error' ? 'error' : 'info';
+  const entry = {
+    id: debugDrawerState.nextId++,
+    level: normalizedLevel,
+    message: String(message || '').trim() || '(empty log message)',
+    scope: String(details.scope || activeDebugScope()),
+    timestamp: new Date().toISOString(),
+    details: details || {},
+    sentToClaude: false,
+  };
+
+  debugDrawerState.entries.push(entry);
+  if (debugDrawerState.entries.length > debugDrawerState.maxEntries) {
+    debugDrawerState.entries.splice(0, debugDrawerState.entries.length - debugDrawerState.maxEntries);
+  }
+  renderDebugDrawer();
+  return entry;
+}
+
+function toggleDebugDrawer(forceOpen) {
+  if (typeof forceOpen === 'boolean') {
+    debugDrawerState.isOpen = forceOpen;
+  } else {
+    debugDrawerState.isOpen = !debugDrawerState.isOpen;
+  }
+  renderDebugDrawer();
+}
+
+function clearDebugLogs() {
+  debugDrawerState.entries = [];
+  renderDebugDrawer();
+}
+
+async function sendDebugLogToClaude(entryId, btn) {
+  const entry = debugDrawerState.entries.find((item) => item.id === entryId);
+  if (!entry) return;
+
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'SENDING...';
+  }
+
+  try {
+    const r = await fetch('/api/debug/send-to-claude', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        log_line: entry.message,
+        level: entry.level,
+        tab: entry.scope,
+        timestamp: entry.timestamp,
+        details: entry.details || {},
+      }),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail || 'Failed to send to Claude');
+    entry.sentToClaude = true;
+    renderDebugDrawer();
+  } catch (e) {
+    recordDebugEvent('error', `Failed to send log ${entryId} to Claude: ${e.message}`, {
+      scope: entry.scope,
+      origin: 'debug-drawer',
+    });
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = 'SEND TO CLAUDE';
+    }
+  }
+}
+
+const nativeFetch = window.fetch.bind(window);
+window.fetch = async function instrumentedFetch(input, init = {}) {
+  const method = (init.method || 'GET').toUpperCase();
+  const url = typeof input === 'string' ? input : input?.url || '';
+  const shouldTrack = /^\/api\//.test(url);
+  const start = performance.now();
+
+  if (shouldTrack) {
+    recordDebugEvent('info', `${method} ${url} started`, { scope: activeDebugScope(), origin: 'fetch' });
+  }
+
+  try {
+    const response = await nativeFetch(input, init);
+    if (shouldTrack) {
+      const duration = Math.round(performance.now() - start);
+      recordDebugEvent(response.ok ? 'info' : 'error', `${method} ${url} -> ${response.status} (${duration}ms)`, {
+        scope: activeDebugScope(),
+        origin: 'fetch',
+        status: response.status,
+      });
+    }
+    return response;
+  } catch (error) {
+    if (shouldTrack) {
+      const duration = Math.round(performance.now() - start);
+      recordDebugEvent('error', `${method} ${url} failed after ${duration}ms: ${error.message}`, {
+        scope: activeDebugScope(),
+        origin: 'fetch',
+      });
+    }
+    throw error;
+  }
+};
+
+window.addEventListener('error', (event) => {
+  const message = event.message || event.error?.message || 'Unhandled dashboard error';
+  recordDebugEvent('error', message, {
+    scope: activeDebugScope(),
+    origin: 'window-error',
+    filename: event.filename || '',
+    line: event.lineno || 0,
+    column: event.colno || 0,
+  });
+});
+
+window.addEventListener('unhandledrejection', (event) => {
+  const reason = event.reason;
+  const message = reason?.message || String(reason || 'Unhandled promise rejection');
+  recordDebugEvent('error', message, {
+    scope: activeDebugScope(),
+    origin: 'promise-rejection',
+  });
+});
 
 async function requestDecision(entityType, entityId, action, decision = 'approved', rationale = '') {
   const safeEntity = entityType === 'task' ? 'tasks' : 'cards';
@@ -286,6 +475,13 @@ async function requestDecision(entityType, entityId, action, decision = 'approve
 }
 
 async function captureFailureFeedback(entityType, entityId, action, errorMessage) {
+  recordDebugEvent('error', `${entityType.toUpperCase()} ${entityId} ${action} failed: ${errorMessage}`, {
+    scope: activeDebugScope(),
+    origin: 'action-failure',
+    entityType,
+    entityId,
+    action,
+  });
   try {
     const promptText = `Action "${action}" failed (${errorMessage}). Add a note for self-learning?`;
     const note = window.prompt(promptText, '') || '';
@@ -367,6 +563,68 @@ function renderCard(card) {
   </div>`;
 }
 
+function renderSuggestionCard(card) {
+  const meta = card.analysis_metadata || {};
+  const evidence = Array.isArray(meta.evidence) ? meta.evidence : [];
+  const generatedFrom = Array.isArray(meta.generated_from) ? meta.generated_from : [];
+  const actions = Array.isArray(card.proposed_actions) ? card.proposed_actions : [];
+  const actionCount = actions.length;
+  const evidenceHtml = evidence.length
+    ? evidence.map((item) => `<div class="action-item"><div class="action-draft">${escHtml(item)}</div></div>`).join('')
+    : '<div class="section-empty">No evidence captured</div>';
+  const generatedHtml = generatedFrom.length
+    ? generatedFrom.map((item) => `<span class="badge cls-informational">${escHtml(item)}</span>`).join('')
+    : '<span class="badge cls-informational">No sources captured</span>';
+  const actionsHtml = actions.length
+    ? actions.map((a, i) => renderAction(a, i)).join('')
+    : '<div class="section-empty">No suggested follow-up captured</div>';
+
+  return `
+  <div class="card suggestion-card ${card.status}" id="card-${card.id}" data-source="${card.source}" data-id="${card.id}">
+    <div class="card-header" onclick="toggleFoldout(${card.id})">
+      <div class="card-meta">
+        ${sourceBadge(card.source)}
+        ${classBadge(meta.category || card.section || 'suggestion')}
+        ${classBadge(card.classification)}
+      </div>
+      <div class="card-summary">${escHtml(card.summary || '(no summary)')}</div>
+      <div class="card-time">${timeAgo(meta.last_analyzed_at || card.timestamp)}</div>
+      <div class="card-toggle" id="toggle-${card.id}">${actionCount} action${actionCount !== 1 ? 's' : ''} &#9660;</div>
+    </div>
+    ${card.context_notes ? `<div class="card-context">${escHtml(card.context_notes)}</div>` : ''}
+    <div class="card-actions">
+      <button class="action-btn open-session" onclick="openSession(${card.id})">OPEN SESSION</button>
+      <button class="action-btn refine" onclick="toggleRefine(${card.id})">REFINE</button>
+      <button class="action-btn hold" onclick="denySuggestionCard(${card.id})">DENY</button>
+      <button class="action-btn approve" onclick="approveSuggestionCard(${card.id})">APPROVE</button>
+    </div>
+    <div class="card-foldout" id="foldout-${card.id}">
+      <div class="proposed-actions">
+        <h4>Evidence</h4>
+        ${evidenceHtml}
+      </div>
+      <div class="proposed-actions">
+        <h4>Suggested Follow-Up</h4>
+        ${actionsHtml}
+      </div>
+      <div class="card-context">GENERATED FROM: ${generatedHtml}</div>
+      <div id="refine-${card.id}" style="display:none; margin-top:16px;">
+        <div class="refine-panel">
+          <div class="proposed-actions"><h4>Refine</h4></div>
+          <div class="refine-history" id="refine-history-${card.id}"></div>
+          <div class="refine-input-row">
+            <textarea class="refine-input" id="refine-input-${card.id}"
+              placeholder="e.g. tighten the recommendation and call out rollout risks"
+              onkeydown="handleRefineKey(event, ${card.id})"></textarea>
+            <button class="action-btn" onclick="sendRefine(${card.id})">SEND</button>
+          </div>
+        </div>
+      </div>
+      <div id="xterm-${card.id}" class="xterm-container" style="display:none;"></div>
+    </div>
+  </div>`;
+}
+
 // -- Smart Card rendering (for two-section views) ----------------------------
 
 function renderSmartCard(card, source) {
@@ -429,6 +687,7 @@ async function loadTwoSectionView(source, options = {}) {
   const cacheKey = `inbox-${source}`;
   const queue = document.getElementById('queue');
   const cached = getCachedView(cacheKey);
+  recordDebugEvent('info', `Loading ${source.toUpperCase()} inbox view`, { scope: source.toUpperCase(), origin: 'view-load' });
 
   if (cached) {
     queue.innerHTML = cached.html;
@@ -486,7 +745,15 @@ async function loadTwoSectionView(source, options = {}) {
     if (activeFilter === source) {
       queue.innerHTML = html;
     }
+    recordDebugEvent('info', `Loaded ${source.toUpperCase()} inbox view (${needsCards.length} needs action / ${noActionCards.length} no action)`, {
+      scope: source.toUpperCase(),
+      origin: 'view-load',
+    });
   } catch (e) {
+    recordDebugEvent('error', `Failed to load ${source.toUpperCase()} inbox view: ${e.message}`, {
+      scope: source.toUpperCase(),
+      origin: 'view-load',
+    });
     if (!cached) {
       queue.innerHTML = `<div style="color:#ea4335;padding:40px;text-align:center;">Failed to load ${escHtml(source)}: ${escHtml(e.message)}</div>`;
     }
@@ -513,6 +780,7 @@ async function loadCalendarView(options = {}) {
   const cacheKey = 'calendar';
   const queue = document.getElementById('queue');
   const cached = getCachedView(cacheKey);
+  recordDebugEvent('info', 'Loading CALENDAR view', { scope: 'CALENDAR', origin: 'view-load' });
 
   if (cached) {
     queue.innerHTML = cached.html;
@@ -538,7 +806,10 @@ async function loadCalendarView(options = {}) {
       const eventDay = startOfLocalDay(eventStart);
       if (eventDay.getTime() === upcomingConfig.todayStart.getTime()) {
         todayCards.push(card);
-      } else if (eventDay >= upcomingConfig.rangeStart && eventDay < upcomingConfig.rangeEndExclusive) {
+      } else if (
+        eventDay >= upcomingConfig.rangeStart &&
+        eventDay < upcomingConfig.rangeEndExclusive
+      ) {
         upcomingWeekCards.push(card);
       }
     });
@@ -559,7 +830,15 @@ async function loadCalendarView(options = {}) {
       </div>`;
     cacheView(cacheKey, { html });
     if (activeFilter === 'calendar') queue.innerHTML = html;
+    recordDebugEvent('info', `Loaded CALENDAR view (${todayCards.length} today / ${upcomingWeekCards.length} upcoming)`, {
+      scope: 'CALENDAR',
+      origin: 'view-load',
+    });
   } catch (e) {
+    recordDebugEvent('error', `Failed to load CALENDAR view: ${e.message}`, {
+      scope: 'CALENDAR',
+      origin: 'view-load',
+    });
     if (!cached) {
       queue.innerHTML = `<div style="color:#ea4335;padding:40px;text-align:center;">Failed: ${escHtml(e.message)}</div>`;
     }
@@ -815,6 +1094,48 @@ async function approveCard(id) {
   } catch (e) {
     await captureFailureFeedback('card', id, 'execute', e.message);
     alert(`Card #${id}: ${e.message}`);
+  }
+}
+
+async function approveSuggestionCard(id) {
+  const approved = window.confirm(`Approve suggestion #${id} and create follow-up artifacts?`);
+  if (!approved) return;
+  const rationale = window.prompt('Approval note (optional):', '') || '';
+  try {
+    const decision = await requestDecision('card', id, 'approve-suggestion', 'approved', rationale);
+    const r = await fetch(`/api/suggestions/${id}/approve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision_event_id: decision.decision_event_id }),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail || 'Suggestion approval failed');
+    invalidateTabCache();
+    await loadSuggestionsView({ forceRefresh: true });
+    const automationNote = data.automation_draft_file ? ' and automation draft' : '';
+    alert(`Suggestion #${id}: created Task #${data.task_number}${automationNote}.`);
+  } catch (e) {
+    await captureFailureFeedback('card', id, 'approve-suggestion', e.message);
+    alert(`Suggestion #${id}: ${e.message}`);
+  }
+}
+
+async function denySuggestionCard(id) {
+  const rationale = window.prompt('Why deny this suggestion? (optional)', '') || '';
+  try {
+    await requestDecision('card', id, 'deny-suggestion', 'rejected', rationale);
+    const r = await fetch(`/api/suggestions/${id}/deny`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rationale }),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail || 'Suggestion deny failed');
+    invalidateTabCache();
+    await loadSuggestionsView({ forceRefresh: true });
+  } catch (e) {
+    await captureFailureFeedback('card', id, 'deny-suggestion', e.message);
+    alert(`Suggestion #${id}: ${e.message}`);
   }
 }
 
@@ -1087,6 +1408,7 @@ async function loadJiraStatusView(options = {}) {
   const cacheKey = 'jira';
   const queue = document.getElementById('queue');
   const cached = getCachedView(cacheKey);
+  recordDebugEvent('info', 'Loading JIRA sprint view', { scope: 'JIRA', origin: 'view-load' });
 
   if (cached) {
     setCounts(cached.counts || {});
@@ -1111,7 +1433,15 @@ async function loadJiraStatusView(options = {}) {
     setCounts(cardsData.counts || {});
     cacheView(cacheKey, { html, counts: cardsData.counts || {} });
     if (activeFilter === 'jira') queue.innerHTML = html;
+    recordDebugEvent('info', `Loaded JIRA sprint view (${order.length} status columns / ${jiraCards.length} linked cards)`, {
+      scope: 'JIRA',
+      origin: 'view-load',
+    });
   } catch (e) {
+    recordDebugEvent('error', `Failed to load JIRA sprint view: ${e.message}`, {
+      scope: 'JIRA',
+      origin: 'view-load',
+    });
     if (!cached) {
       queue.innerHTML = `<div style="color:#ea4335;padding:40px;text-align:center;">Failed to load sprint: ${escHtml(e.message)}</div>`;
     }
@@ -1180,6 +1510,7 @@ async function loadTasksView(options = {}) {
   const cacheKey = 'tasks';
   const queue = document.getElementById('queue');
   const cached = getCachedView(cacheKey);
+  recordDebugEvent('info', 'Loading TASKS view', { scope: 'TASKS', origin: 'view-load' });
 
   if (cached) {
     queue.innerHTML = cached.html;
@@ -1199,12 +1530,21 @@ async function loadTasksView(options = {}) {
       const html = '<div class="section-empty">No active tasks found in active-tasks.md</div>';
       cacheView(cacheKey, { html });
       if (activeFilter === 'tasks') queue.innerHTML = html;
+      recordDebugEvent('info', 'Loaded TASKS view with no active tasks', { scope: 'TASKS', origin: 'view-load' });
       return;
     }
     const html = tasks.map(renderTaskCard).join('');
     cacheView(cacheKey, { html });
     if (activeFilter === 'tasks') queue.innerHTML = html;
+    recordDebugEvent('info', `Loaded TASKS view (${tasks.length} active tasks)`, {
+      scope: 'TASKS',
+      origin: 'view-load',
+    });
   } catch (e) {
+    recordDebugEvent('error', `Failed to load TASKS view: ${e.message}`, {
+      scope: 'TASKS',
+      origin: 'view-load',
+    });
     if (!cached) {
       queue.innerHTML = `<div style="color:#ea4335;padding:40px;text-align:center;">Failed to load tasks: ${escHtml(e.message)}</div>`;
     }
@@ -1217,6 +1557,7 @@ async function loadDailyView(options = {}) {
   const cacheKey = `daily-${dailyState.selectedDate || 'latest'}`;
   const queue = document.getElementById('queue');
   const cached = getCachedView(cacheKey);
+  recordDebugEvent('info', 'Loading DAILY view', { scope: 'DAILY', origin: 'view-load' });
   if (cached) {
     queue.innerHTML = cached.html;
     if (!options.forceRefresh && cacheIsFresh(cached)) return;
@@ -1234,6 +1575,7 @@ async function loadDailyView(options = {}) {
       const html = '<div class="section-empty">No daily logs found</div>';
       cacheView(cacheKey, { html });
       if (activeFilter === 'daily') queue.innerHTML = html;
+      recordDebugEvent('info', 'Loaded DAILY view with no logs', { scope: 'DAILY', origin: 'view-load' });
       return;
     }
 
@@ -1267,7 +1609,15 @@ async function loadDailyView(options = {}) {
 
     cacheView(cacheKey, { html });
     if (activeFilter === 'daily') queue.innerHTML = html;
+    recordDebugEvent('info', `Loaded DAILY view for ${dailyState.selectedDate}`, {
+      scope: 'DAILY',
+      origin: 'view-load',
+    });
   } catch (e) {
+    recordDebugEvent('error', `Failed to load DAILY view: ${e.message}`, {
+      scope: 'DAILY',
+      origin: 'view-load',
+    });
     if (!cached) {
       queue.innerHTML = `<div style="color:#ea4335;padding:40px;text-align:center;">Failed to load daily tab: ${escHtml(e.message)}</div>`;
     }
@@ -1283,6 +1633,10 @@ async function loadLearningsView(options = {}) {
   const cacheKey = `learnings-${learningsState.range}-${learningsState.date}`;
   const queue = document.getElementById('queue');
   const cached = getCachedView(cacheKey);
+  recordDebugEvent('info', `Loading LEARNINGS view (${learningsState.range}:${learningsState.date})`, {
+    scope: 'LEARNINGS',
+    origin: 'view-load',
+  });
   if (cached) {
     queue.innerHTML = cached.html;
     if (!options.forceRefresh && cacheIsFresh(cached)) return;
@@ -1367,7 +1721,15 @@ async function loadLearningsView(options = {}) {
 
     cacheView(cacheKey, { html });
     if (activeFilter === 'learnings') queue.innerHTML = html;
+    recordDebugEvent('info', `Loaded LEARNINGS view (${events.length} events)`, {
+      scope: 'LEARNINGS',
+      origin: 'view-load',
+    });
   } catch (e) {
+    recordDebugEvent('error', `Failed to load LEARNINGS view: ${e.message}`, {
+      scope: 'LEARNINGS',
+      origin: 'view-load',
+    });
     if (!cached) {
       queue.innerHTML = `<div style="color:#ea4335;padding:40px;text-align:center;">Failed to load learnings tab: ${escHtml(e.message)}</div>`;
     }
@@ -1389,6 +1751,10 @@ async function loadKnowledgeView(options = {}) {
   const cacheKey = `knowledge-${knowledgeState.selectedPath || 'index'}-${knowledgeState.query}`;
   const queue = document.getElementById('queue');
   const cached = getCachedView(cacheKey);
+  recordDebugEvent('info', `Loading KNOWLEDGE view (${knowledgeState.query || 'all docs'})`, {
+    scope: 'KNOWLEDGE',
+    origin: 'view-load',
+  });
   if (cached) {
     queue.innerHTML = cached.html;
     if (!options.forceRefresh && cacheIsFresh(cached)) return;
@@ -1437,7 +1803,15 @@ async function loadKnowledgeView(options = {}) {
 
     cacheView(cacheKey, { html });
     if (activeFilter === 'knowledge') queue.innerHTML = html;
+    recordDebugEvent('info', `Loaded KNOWLEDGE view (${docs.length} docs)`, {
+      scope: 'KNOWLEDGE',
+      origin: 'view-load',
+    });
   } catch (e) {
+    recordDebugEvent('error', `Failed to load KNOWLEDGE view: ${e.message}`, {
+      scope: 'KNOWLEDGE',
+      origin: 'view-load',
+    });
     if (!cached) {
       queue.innerHTML = `<div style="color:#ea4335;padding:40px;text-align:center;">Failed to load knowledge tab: ${escHtml(e.message)}</div>`;
     }
@@ -1452,6 +1826,114 @@ function setKnowledgeQuery(q) {
 function selectKnowledgeDoc(path) {
   knowledgeState.selectedPath = path;
   loadKnowledgeView({ forceRefresh: true });
+}
+
+async function loadSuggestionsView(options = {}) {
+  const cacheKey = 'suggestions';
+  const queue = document.getElementById('queue');
+  const cached = getCachedView(cacheKey);
+  recordDebugEvent('info', `Loading SUGGESTIONS view${options.regenerate ? ' (refresh requested)' : ''}`, {
+    scope: 'SUGGESTIONS',
+    origin: 'view-load',
+  });
+  const shouldBypassCache = !!options.forceRefresh;
+  const shouldRegenerate = !!options.regenerate;
+  if (cached) {
+    queue.innerHTML = cached.html;
+    if (!shouldBypassCache && cacheIsFresh(cached)) return;
+  } else {
+    queue.innerHTML = '<div style="color:#666;padding:40px;text-align:center;letter-spacing:4px">LOADING SUGGESTIONS...</div>';
+  }
+
+  try {
+    const refreshParam = shouldRegenerate ? 'true' : 'false';
+    const r = await fetch(`/api/suggestions?refresh=${refreshParam}`);
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail || 'Failed to load suggestions');
+
+    suggestionState.lastAnalyzedAt = data.last_analyzed_at || '';
+    const sections = Array.isArray(data.sections) ? data.sections : [];
+    const sectionHtml = sections.map((section) => {
+      const cards = Array.isArray(section.cards) ? section.cards : [];
+      return `
+        <div class="section-group">
+          <div class="section-header">
+            <span>${escHtml(section.label || section.key || 'Suggestions')}</span>
+            <span class="section-count">${cards.length}</span>
+          </div>
+          <div class="section-body">
+            ${cards.length ? cards.map(renderSuggestionCard).join('') : '<div class="section-empty">No active suggestions in this section</div>'}
+          </div>
+        </div>
+      `;
+    }).join('');
+
+    const heldCards = Array.isArray(data.held) ? data.held : [];
+    const heldHtml = `
+      <div class="section-group">
+        <div class="section-header no-action" onclick="toggleSection('suggestions-held')">
+          <span>HELD / DENIED</span>
+          <span class="section-count">${heldCards.length}</span>
+          <span class="section-toggle" id="toggle-suggestions-held">&#9654;</span>
+        </div>
+        <div class="section-body" id="section-suggestions-held" style="display:none;">
+          ${heldCards.length ? heldCards.map(renderSuggestionCard).join('') : '<div class="section-empty">No denied suggestions</div>'}
+        </div>
+      </div>
+    `;
+
+    const counts = sections.map((section) => `<span class="badge cls-informational">${escHtml(section.label)}: ${escHtml(section.count || 0)}</span>`).join('');
+    const html = `
+      <div class="section-group">
+        <div class="section-header">
+          <span>SUGGESTIONS</span>
+          <span class="section-count">${sections.reduce((sum, section) => sum + Number(section.count || 0), 0)}</span>
+        </div>
+        <div class="section-body">
+          <div class="card-actions" style="padding:0 0 12px 0;">
+            <button class="action-btn approve" onclick="refreshSuggestions(this)">REFRESH</button>
+          </div>
+          <div class="card-context">
+            LAST ANALYZED: ${escHtml(suggestionState.lastAnalyzedAt ? timeAgo(suggestionState.lastAnalyzedAt) : 'never')}
+          </div>
+          <div class="card-context">${counts || '<span class="badge cls-informational">No suggestions yet</span>'}</div>
+        </div>
+      </div>
+      ${sectionHtml}
+      ${heldHtml}
+    `;
+
+    cacheView(cacheKey, { html });
+    if (activeFilter === 'suggestions') queue.innerHTML = html;
+    recordDebugEvent('info', `Loaded SUGGESTIONS view (${sections.length} sections / ${heldCards.length} held)`, {
+      scope: 'SUGGESTIONS',
+      origin: 'view-load',
+    });
+  } catch (e) {
+    recordDebugEvent('error', `Failed to load SUGGESTIONS view: ${e.message}`, {
+      scope: 'SUGGESTIONS',
+      origin: 'view-load',
+    });
+    if (!cached) {
+      queue.innerHTML = `<div style="color:#ea4335;padding:40px;text-align:center;">Failed to load suggestions: ${escHtml(e.message)}</div>`;
+    }
+  }
+}
+
+async function refreshSuggestions(btn) {
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'REFRESHING...';
+  }
+  try {
+    invalidateTabCache();
+    await loadSuggestionsView({ forceRefresh: true, regenerate: true });
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = 'REFRESH';
+    }
+  }
 }
 
 function toggleTaskFoldout(domId) {
@@ -1691,6 +2173,7 @@ async function loadQueue(source = 'all', options = {}) {
   const cacheKey = `queue-${source}`;
   const queue = document.getElementById('queue');
   const cached = getCachedView(cacheKey);
+  recordDebugEvent('info', `Loading ${source.toUpperCase()} queue`, { scope: source.toUpperCase(), origin: 'view-load' });
 
   if (cached) {
     allCards = cached.cards || [];
@@ -1714,7 +2197,15 @@ async function loadQueue(source = 'all', options = {}) {
 
     cacheView(cacheKey, { html, cards: allCards, counts: data.counts || {} });
     if (activeFilter === source) queue.innerHTML = html;
+    recordDebugEvent('info', `Loaded ${source.toUpperCase()} queue (${allCards.length} cards)`, {
+      scope: source.toUpperCase(),
+      origin: 'view-load',
+    });
   } catch (e) {
+    recordDebugEvent('error', `Failed to load ${source.toUpperCase()} queue: ${e.message}`, {
+      scope: source.toUpperCase(),
+      origin: 'view-load',
+    });
     if (!cached) {
       queue.innerHTML = `<div style="color:#ea4335;padding:40px;text-align:center;">Failed to load ${escHtml(source)}: ${escHtml(e.message)}</div>`;
     }
@@ -1728,6 +2219,10 @@ document.querySelectorAll('.filter-btn[data-source]').forEach(btn => {
     document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     activeFilter = btn.dataset.source;
+    recordDebugEvent('info', `Switched to ${activeFilter.toUpperCase()} tab`, {
+      scope: activeFilter.toUpperCase(),
+      origin: 'tab-switch',
+    });
     if (activeFilter === 'slack') {
       loadTwoSectionView('slack');
     } else if (activeFilter === 'gmail') {
@@ -1744,19 +2239,46 @@ document.querySelectorAll('.filter-btn[data-source]').forEach(btn => {
       loadLearningsView();
     } else if (activeFilter === 'knowledge') {
       loadKnowledgeView();
+    } else if (activeFilter === 'suggestions') {
+      loadSuggestionsView();
     } else {
       loadQueue(activeFilter);
     }
   });
 });
 
+document.getElementById('debug-drawer-toggle').addEventListener('click', () => {
+  toggleDebugDrawer();
+});
+
 // -- SSE live push ------------------------------------------------------------
 
 function connectSSE() {
   const es = new EventSource('/api/events');
+  recordDebugEvent('info', 'Connected dashboard event stream', { scope: activeDebugScope(), origin: 'sse' });
+
+  es.addEventListener('cache-invalidate', (e) => {
+    try {
+      const { source } = JSON.parse(e.data);
+      if (source) invalidateTabCache();
+      if (source === 'suggestions' && activeFilter === 'suggestions') {
+        loadSuggestionsView({ forceRefresh: true });
+      }
+    } catch (error) {
+      recordDebugEvent('error', `Failed to process cache invalidation event: ${error.message}`, {
+        scope: activeDebugScope(),
+        origin: 'sse',
+      });
+    }
+  });
+
   es.onmessage = (e) => {
     try {
       const card = JSON.parse(e.data);
+      recordDebugEvent('info', `Live card received: ${card.summary?.slice(0, 80) || 'new card'}`, {
+        scope: String(card.source || activeDebugScope()).toUpperCase(),
+        origin: 'sse',
+      });
       // Only live-insert cards while viewing ALL to avoid cross-tab UI jumps.
       if (activeFilter === 'all') {
         const queue = document.getElementById('queue');
@@ -1773,9 +2295,20 @@ function connectSSE() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ title: 'eng-buddy', message: card.summary?.slice(0, 80) })
       });
-    } catch {}
+    } catch (error) {
+      recordDebugEvent('error', `Failed to process live event: ${error.message}`, {
+        scope: activeDebugScope(),
+        origin: 'sse',
+      });
+    }
   };
-  es.onerror = () => setTimeout(connectSSE, 5000);
+  es.onerror = () => {
+    recordDebugEvent('error', 'Dashboard event stream disconnected; retrying in 5s', {
+      scope: activeDebugScope(),
+      origin: 'sse',
+    });
+    setTimeout(connectSSE, 5000);
+  };
 }
 
 // -- Terminal setting ---------------------------------------------------------
@@ -1796,9 +2329,38 @@ document.getElementById('terminal-select').addEventListener('change', async (e) 
   });
 });
 
+const restartBtn = document.getElementById('restart-btn');
+if (restartBtn) {
+  restartBtn.addEventListener('click', async () => {
+    restartBtn.textContent = 'RESTARTING...';
+    restartBtn.classList.add('restarting');
+    try {
+      await fetch('/api/restart', { method: 'POST' });
+    } catch {}
+
+    const poll = setInterval(async () => {
+      try {
+        const r = await fetch('/api/health');
+        if (r.ok) {
+          clearInterval(poll);
+          location.reload();
+        }
+      } catch {}
+    }, 1000);
+
+    setTimeout(() => {
+      clearInterval(poll);
+      restartBtn.textContent = 'RESTART';
+      restartBtn.classList.remove('restarting');
+    }, 30000);
+  });
+}
+
 // -- Init ---------------------------------------------------------------------
 
 async function init() {
+  renderDebugDrawer();
+  recordDebugEvent('info', 'Initializing dashboard', { scope: 'ALL', origin: 'init' });
   await Promise.all([
     loadQueue(),
     loadTerminalSetting(),
@@ -1815,6 +2377,7 @@ async function init() {
     await loadBriefing();
     localStorage.setItem('eng-buddy-last-briefing', today);
   }
+  recordDebugEvent('info', 'Dashboard ready', { scope: activeDebugScope(), origin: 'init' });
 }
 
 init();
