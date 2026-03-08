@@ -9,7 +9,6 @@ Injects brain context and parses learning from Claude responses.
 """
 
 import json
-import os
 import re
 import sqlite3
 import sys
@@ -19,10 +18,6 @@ from datetime import datetime, date, timezone
 from pathlib import Path
 from email.utils import parseaddr
 import urllib.request
-
-# Strip CLAUDECODE env var so subprocess claude calls don't fail with
-# "nested session" error when eng-buddy is launched from Claude Code.
-_claude_env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
 import urllib.parse
 import urllib.error
 
@@ -290,7 +285,6 @@ Return ONLY a JSON array. No prose."""
             capture_output=True,
             text=True,
             timeout=120,
-            env=_claude_env,
         )
         output = result.stdout.strip()
 

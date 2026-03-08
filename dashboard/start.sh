@@ -1,6 +1,9 @@
 #!/bin/bash
 cd ~/.claude/eng-buddy/dashboard
 
+# Prevent "nested session" errors when launched from Claude Code
+unset CLAUDECODE
+
 # Set your preferred terminal for "Open Session" (Terminal, Warp, iTerm, Alacritty, kitty)
 export ENG_BUDDY_TERMINAL="${ENG_BUDDY_TERMINAL:-Warp}"
 

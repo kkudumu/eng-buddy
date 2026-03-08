@@ -13,10 +13,6 @@ import sys
 from datetime import datetime, date, timezone
 from pathlib import Path
 
-# Strip CLAUDECODE env var so subprocess claude calls don't fail with
-# "nested session" error when eng-buddy is launched from Claude Code.
-_claude_env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
-
 # Allow importing brain.py from same directory
 sys.path.insert(0, str(Path(__file__).parent))
 import brain
@@ -54,8 +50,7 @@ def fetch_events():
     try:
         result = subprocess.run(
             ["claude", "--dangerously-skip-permissions", "--print", prompt],
-            capture_output=True, text=True, timeout=30, env=_claude_env
-        )
+            capture_output=True, text=True, timeout=30        )
         match = re.search(r'\[.*\]', result.stdout, re.DOTALL)
         if match:
             return json.loads(match.group(0))
@@ -87,8 +82,7 @@ Return ONLY a JSON array with the original fields plus context_notes, priority, 
     try:
         result = subprocess.run(
             ["claude", "--dangerously-skip-permissions", "--print", prompt],
-            capture_output=True, text=True, timeout=45, env=_claude_env
-        )
+            capture_output=True, text=True, timeout=45        )
         match = re.search(r'\[.*\]', result.stdout, re.DOTALL)
         if match:
             enriched = json.loads(match.group(0))

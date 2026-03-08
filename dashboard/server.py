@@ -27,10 +27,6 @@ JIRA_BOARD = os.environ.get("ENG_BUDDY_JIRA_BOARD", "Systems")
 # In-memory cache for Jira sprint data
 _jira_cache = {"data": None, "fetched_at": 0}
 
-# Environment for Claude CLI subprocesses — strip CLAUDECODE to avoid
-# "nested session" detection when eng-buddy itself runs inside Claude Code.
-_claude_env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
-
 
 def _escape_applescript_text(value: str) -> str:
     return str(value).replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ").replace("\r", " ")
@@ -152,8 +148,7 @@ async def send_slack_draft(card_id: int):
     )
     result = subprocess.run(
         ["claude", "--dangerously-skip-permissions", "--print", prompt],
-        capture_output=True, text=True, timeout=30, env=_claude_env
-    )
+        capture_output=True, text=True, timeout=30    )
     if result.returncode != 0:
         raise HTTPException(502, f"slack send failed: {result.stderr[:200]}")
 
@@ -203,8 +198,7 @@ async def send_email_draft(card_id: int):
     )
     result = subprocess.run(
         ["claude", "--dangerously-skip-permissions", "--print", prompt],
-        capture_output=True, text=True, timeout=30, env=_claude_env
-    )
+        capture_output=True, text=True, timeout=30    )
     if result.returncode != 0:
         raise HTTPException(502, f"email send failed: {result.stderr[:200]}")
 
@@ -296,8 +290,7 @@ async def execute_card(websocket: WebSocket, card_id: int):
     # Spawn claude in PTY
     proc = ptyprocess.PtyProcess.spawn(
         ["claude", "--dangerously-skip-permissions", "--print", prompt],
-        dimensions=(50, 220),
-        env=_claude_env
+        dimensions=(50, 220)
     )
 
     # Mark card as running
@@ -403,8 +396,7 @@ async def refine_card(card_id: int, body: dict = Body(...)):
         ["claude", "--dangerously-skip-permissions", "--print", conversation],
         capture_output=True,
         text=True,
-        timeout=60,
-        env=_claude_env
+        timeout=60
     )
 
     response_text = result.stdout.strip()
@@ -567,8 +559,7 @@ async def jira_sprint(refresh: bool = False):
     try:
         result = subprocess.run(
             ["claude", "--dangerously-skip-permissions", "--print", prompt],
-            capture_output=True, text=True, timeout=60, env=_claude_env
-        )
+            capture_output=True, text=True, timeout=60        )
         output = result.stdout.strip()
         match = re.search(r'\[.*\]', output, re.DOTALL)
         if match:
@@ -751,8 +742,7 @@ Return ONLY the JSON. No prose."""
     try:
         result = subprocess.run(
             ["claude", "--dangerously-skip-permissions", "--print", prompt],
-            capture_output=True, text=True, timeout=60, env=_claude_env
-        )
+            capture_output=True, text=True, timeout=60        )
         match = re.search(r'\{.*\}', result.stdout, re.DOTALL)
         if match:
             briefing = json.loads(match.group(0))
@@ -807,8 +797,7 @@ async def create_gmail_filter(body: dict):
     )
     result = subprocess.run(
         ["claude", "--dangerously-skip-permissions", "--print", prompt],
-        capture_output=True, text=True, timeout=30, env=_claude_env
-    )
+        capture_output=True, text=True, timeout=30    )
     if result.returncode != 0:
         raise HTTPException(502, f"filter creation failed: {result.stderr[:200]}")
 

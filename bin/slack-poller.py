@@ -15,10 +15,6 @@ import subprocess
 from datetime import datetime, date, timezone
 from pathlib import Path
 
-# Strip CLAUDECODE env var so subprocess claude calls don't fail with
-# "nested session" error when eng-buddy is launched from Claude Code.
-_claude_env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
-
 # Ensure brain.py is importable from same directory
 sys.path.insert(0, str(Path(__file__).parent))
 import brain
@@ -166,7 +162,7 @@ No prose, just the JSON array."""
     try:
         result = subprocess.run(
             ["claude", "--dangerously-skip-permissions", "--print", prompt],
-            capture_output=True, text=True, timeout=120, env=_claude_env
+            capture_output=True, text=True, timeout=120
         )
         if result.returncode != 0:
             print(f"Claude CLI error: {result.stderr[:200]}")

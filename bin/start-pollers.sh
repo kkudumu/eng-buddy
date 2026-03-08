@@ -5,6 +5,9 @@
 
 set -euo pipefail
 
+# Prevent "nested session" errors when launched from Claude Code
+unset CLAUDECODE
+
 SKILLS_BIN="$(cd "$(dirname "$0")" && pwd)"
 RUNTIME_DIR="$HOME/.claude/eng-buddy"
 RUNTIME_BIN="$RUNTIME_DIR/bin"
