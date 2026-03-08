@@ -36,6 +36,11 @@ def _escape_applescript_text(value: str) -> str:
 async def lifespan(app: FastAPI):
     STATIC_DIR.mkdir(exist_ok=True)
     migrate()
+    try:
+        count = sync_tasks_to_db()
+        print(f"[startup] Synced {count} active tasks to DB")
+    except Exception as e:
+        print(f"[startup] Task sync failed (non-fatal): {e}")
     yield
 
 app = FastAPI(lifespan=lifespan)
@@ -55,30 +60,28 @@ async def health():
     return {"status": "ok"}
 
 
-@app.get("/api/tasks")
-async def get_tasks():
-    """Parse active-tasks.md and return structured task list."""
+def sync_tasks_to_db():
+    """Parse active-tasks.md and upsert cards with source='tasks' into inbox.db."""
     tasks_file = Path.home() / ".claude" / "eng-buddy" / "tasks" / "active-tasks.md"
     if not tasks_file.exists():
-        return {"tasks": [], "raw": ""}
+        return 0
 
     content = tasks_file.read_text()
     tasks = []
     current = None
 
     for line in content.split("\n"):
-        # Match task headers like "### #1 - Task name" or "### #1 - Task name [ITWORK2-1234]"
         m = re.match(r"^###\s+#(\d+)\s*[-–—]\s*(.+)", line)
         if m:
             if current:
                 tasks.append(current)
             task_num = int(m.group(1))
             title_raw = m.group(2).strip()
-            # Extract Jira key if present
             jira_match = re.search(r"\[([A-Z]+-\d+)\]", title_raw)
             jira_key = jira_match.group(1) if jira_match else None
             title = re.sub(r"\s*\[[A-Z]+-\d+\]", "", title_raw).strip()
-            # Check for completion markers
+            # Strip trailing emoji/markers from title
+            title = re.sub(r"\s*[✅⛔].*$", "", title).strip()
             completed = bool(re.search(r"✅|completed|CLOSED", title_raw, re.IGNORECASE))
             current = {
                 "num": task_num,
@@ -116,12 +119,54 @@ async def get_tasks():
     if current:
         tasks.append(current)
 
-    # Filter out completed tasks, sort by priority
-    prio_order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
-    active = [t for t in tasks if t["status"] != "completed"]
-    active.sort(key=lambda t: prio_order.get(t["priority"], 2))
+    # Deduplicate by task number — first occurrence wins (PENDING section
+    # has the canonical status; IN PROGRESS section may re-list without markers)
+    seen_nums = {}
+    for t in tasks:
+        num = t["num"]
+        if num not in seen_nums:
+            seen_nums[num] = t
+        else:
+            # If earlier entry was completed, keep it completed
+            if seen_nums[num]["status"] == "completed":
+                pass
+            else:
+                # Later entry may have more specific status (e.g., in_progress)
+                seen_nums[num]["status"] = t["status"]
+    tasks = list(seen_nums.values())
 
-    return {"tasks": active, "completed_count": sum(1 for t in tasks if t["status"] == "completed")}
+    conn = get_db()
+    try:
+        # Clear old task cards and rewrite from file (source of truth)
+        conn.execute("DELETE FROM cards WHERE source = 'tasks'")
+
+        for t in tasks:
+            if t["status"] == "completed":
+                continue  # Skip completed tasks
+            summary = f"#{t['num']} — {t['title']}"
+            classification = t["priority"]
+            section = "needs-action" if t["status"] in ("in_progress", "blocked") else "no-action"
+            card_status = "pending"
+            proposed = json.dumps([{
+                "type": "task",
+                "task_num": t["num"],
+                "jira_key": t.get("jira_key") or "",
+                "task_status": t["status"],
+                "priority": t["priority"],
+            }])
+            context_notes = t.get("description", "")
+            conn.execute(
+                """INSERT INTO cards
+                   (source, timestamp, summary, classification, status,
+                    proposed_actions, execution_status, section, context_notes)
+                   VALUES ('tasks', datetime('now'), ?, ?, ?, ?, 'not_run', ?, ?)""",
+                (summary, classification, card_status, proposed, section, context_notes),
+            )
+
+        conn.commit()
+        return len([t for t in tasks if t["status"] != "completed"])
+    finally:
+        conn.close()
 
 
 @app.post("/api/restart")

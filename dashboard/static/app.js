@@ -625,19 +625,34 @@ async function loadTasksView() {
   }
 
   try {
-    const r = await fetch('/api/tasks');
+    const r = await fetch('/api/cards?source=tasks');
     const data = await r.json();
+    const cards = data.cards || [];
 
-    if (!data.tasks.length) {
+    if (!cards.length) {
       const empty = '<div style="color:#444;padding:40px;text-align:center;letter-spacing:4px">NO ACTIVE TASKS</div>';
       queue.innerHTML = empty;
       tabCache[cacheKey] = empty;
       return;
     }
 
-    const inProgress = data.tasks.filter(t => t.status === 'in_progress');
-    const blocked = data.tasks.filter(t => t.status === 'blocked');
-    const pending = data.tasks.filter(t => t.status === 'pending');
+    // Extract task metadata from proposed_actions
+    const tasks = cards.map(card => {
+      const actions = Array.isArray(card.proposed_actions) ? card.proposed_actions : [];
+      const meta = actions.find(a => a.type === 'task') || {};
+      return {
+        num: meta.task_num || 0,
+        title: (card.summary || '').replace(/^#\d+\s*[—–-]\s*/, ''),
+        jira_key: meta.jira_key || null,
+        status: meta.task_status || 'pending',
+        priority: meta.priority || card.classification || 'medium',
+        description: card.context_notes || '',
+      };
+    });
+
+    const inProgress = tasks.filter(t => t.status === 'in_progress');
+    const blocked = tasks.filter(t => t.status === 'blocked');
+    const pending = tasks.filter(t => t.status === 'pending');
 
     const section = (title, items, cls) => {
       if (!items.length) return '';
@@ -656,7 +671,6 @@ async function loadTasksView() {
         ${section('IN PROGRESS', inProgress, 'tasks-progress')}
         ${section('BLOCKED', blocked, 'tasks-blocked')}
         ${section('PENDING', pending, 'tasks-pending')}
-        <div class="tasks-completed-note">${data.completed_count} completed tasks hidden</div>
       </div>`;
     queue.innerHTML = html;
     tabCache[cacheKey] = html;
