@@ -6,6 +6,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -27,9 +28,39 @@ JIRA_BOARD = os.environ.get("ENG_BUDDY_JIRA_BOARD", "Systems")
 # In-memory cache for Jira sprint data
 _jira_cache = {"data": None, "fetched_at": 0}
 
+# Track which sources have new data (for SSE cache invalidation)
+_stale_sources: set[str] = set()
+
 
 def _escape_applescript_text(value: str) -> str:
     return str(value).replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ").replace("\r", " ")
+
+
+def _run_poller(script_name: str, timeout: int = 30) -> bool:
+    """Run a poller script synchronously. Returns True on success."""
+    bin_dir = Path(__file__).parent.parent / "bin"
+    script = bin_dir / script_name
+    if not script.exists():
+        print(f"[startup] Poller not found: {script}")
+        return False
+    try:
+        env = os.environ.copy()
+        env.pop("CLAUDECODE", None)
+        result = subprocess.run(
+            [sys.executable, str(script)],
+            capture_output=True, text=True, timeout=timeout, env=env,
+        )
+        if result.returncode == 0:
+            print(f"[startup] {script_name}: OK")
+        else:
+            print(f"[startup] {script_name}: exit {result.returncode} — {result.stderr[:200]}")
+        return result.returncode == 0
+    except subprocess.TimeoutExpired:
+        print(f"[startup] {script_name}: timed out after {timeout}s")
+        return False
+    except Exception as e:
+        print(f"[startup] {script_name}: {e}")
+        return False
 
 
 @asynccontextmanager
@@ -41,6 +72,18 @@ async def lifespan(app: FastAPI):
         print(f"[startup] Synced {count} active tasks to DB")
     except Exception as e:
         print(f"[startup] Task sync failed (non-fatal): {e}")
+
+    # Pre-fetch all sources in parallel so dashboard has data on first load
+    pollers = ["slack-poller.py", "gmail-poller.py", "calendar-poller.py", "jira-poller.py"]
+    print("[startup] Running initial polls (parallel, 45s timeout)...")
+    with __import__("concurrent.futures").ThreadPoolExecutor(max_workers=4) as pool:
+        futures = {pool.submit(_run_poller, p, 45): p for p in pollers}
+        for fut in __import__("concurrent.futures").as_completed(futures, timeout=50):
+            try:
+                fut.result()
+            except Exception as e:
+                print(f"[startup] {futures[fut]}: {e}")
+    print("[startup] Initial polls complete")
     yield
 
 app = FastAPI(lifespan=lifespan)
@@ -363,7 +406,12 @@ async def send_email_draft(card_id: int):
 
 
 async def card_event_generator():
-    """Yield new cards as SSE events."""
+    """Yield new cards as SSE events.
+
+    In addition to individual card events, emits ``cache-invalidate``
+    events that tell the frontend which source caches are stale so it
+    can re-fetch only when there's genuinely new data.
+    """
     conn = get_db()
     try:
         row = conn.execute("SELECT MAX(id) FROM cards").fetchone()[0]
@@ -373,11 +421,20 @@ async def card_event_generator():
 
     while True:
         await asyncio.sleep(10)
+
+        # Flush any source-level invalidation signals first
+        if _stale_sources:
+            sources = list(_stale_sources)
+            _stale_sources.clear()
+            for src in sources:
+                yield f"event: cache-invalidate\ndata: {json.dumps({'source': src})}\n\n"
+
         conn = get_db()
         try:
             rows = conn.execute(
                 "SELECT * FROM cards WHERE id > ? ORDER BY id ASC", [last_id]
             ).fetchall()
+            seen_sources: set[str] = set()
             for row in rows:
                 card = dict(row)
                 try:
@@ -385,7 +442,12 @@ async def card_event_generator():
                 except (json.JSONDecodeError, TypeError):
                     card["proposed_actions"] = []
                 last_id = card["id"]
+                seen_sources.add(card.get("source", ""))
                 yield f"data: {json.dumps(card)}\n\n"
+
+            # Emit cache-invalidate for every source that had new cards
+            for src in seen_sources:
+                yield f"event: cache-invalidate\ndata: {json.dumps({'source': src})}\n\n"
         finally:
             conn.close()
 
@@ -803,6 +865,15 @@ async def search_decisions(q: str = "", source: str = None, action: str = None, 
         return {"decisions": decisions, "total": len(decisions)}
     finally:
         conn.close()
+
+
+@app.post("/api/cache-invalidate")
+async def cache_invalidate(body: dict):
+    """Called by pollers after inserting new cards to signal cache staleness."""
+    source = body.get("source")
+    if source:
+        _stale_sources.add(source)
+    return {"ok": True}
 
 
 @app.post("/api/notify")

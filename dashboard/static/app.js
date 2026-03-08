@@ -3,7 +3,38 @@
 let activeFilter = 'all';
 let allCards = [];
 const runningTerminals = {};
-const tabCache = {};  // { filterName: htmlString }
+const CACHE_TTL_MS = 30000;  // 30 seconds — skip re-fetch if cache is fresher
+const tabCache = {};  // { cacheKey: { html: string, ts: number } }
+
+function cacheGet(key) {
+  const entry = tabCache[key];
+  return entry ? entry.html : null;
+}
+
+function cacheSet(key, html) {
+  tabCache[key] = { html, ts: Date.now() };
+}
+
+function cacheIsFresh(key) {
+  const entry = tabCache[key];
+  return entry && (Date.now() - entry.ts) < CACHE_TTL_MS;
+}
+
+/** Map a source name to every cache key it could affect. */
+function cacheKeysForSource(source) {
+  const keys = [`queue-${source}`, `queue-all`];
+  if (source === 'gmail' || source === 'slack') keys.push(`twosection-${source}`);
+  if (source === 'calendar') keys.push('calendar');
+  if (source === 'tasks') keys.push('tasks');
+  if (source === 'jira') keys.push('jira-sprint');
+  return keys;
+}
+
+function cacheInvalidateSource(source) {
+  for (const key of cacheKeysForSource(source)) {
+    if (tabCache[key]) tabCache[key].ts = 0;  // mark stale, keep html for instant display
+  }
+}
 
 // -- Helpers ------------------------------------------------------------------
 
@@ -171,88 +202,96 @@ async function loadTwoSectionView(source) {
   const queue = document.getElementById('queue');
   const cacheKey = `twosection-${source}`;
 
-  if (tabCache[cacheKey]) {
-    queue.innerHTML = tabCache[cacheKey];
+  const cached = cacheGet(cacheKey);
+  if (cached) {
+    queue.innerHTML = cached;
+    if (cacheIsFresh(cacheKey)) return;  // fresh enough — skip fetch
   } else {
     queue.innerHTML = '<div style="color:#666;padding:40px;text-align:center;letter-spacing:4px">LOADING...</div>';
   }
 
-  let needsCards = [];
-  let noActionCards = [];
-  let suggestions = { suggestions: [] };
+  try {
+    let needsCards = [];
+    let noActionCards = [];
+    let suggestions = { suggestions: [] };
 
-  if (source === 'gmail') {
-    const [actionR, alertR, noiseR, noActionR, suggestionsR] = await Promise.all([
-      fetch('/api/cards?source=gmail&section=action-needed'),
-      fetch('/api/cards?source=gmail&section=alert'),
-      fetch('/api/cards?source=gmail&section=noise'),
-      fetch('/api/cards?source=gmail&section=no-action'),
-      fetch('/api/filters/suggestions'),
-    ]);
+    if (source === 'gmail') {
+      const [actionR, alertR, noiseR, noActionR, suggestionsR] = await Promise.all([
+        fetch('/api/cards?source=gmail&section=action-needed'),
+        fetch('/api/cards?source=gmail&section=alert'),
+        fetch('/api/cards?source=gmail&section=noise'),
+        fetch('/api/cards?source=gmail&section=no-action'),
+        fetch('/api/filters/suggestions'),
+      ]);
 
-    const actionData = await actionR.json();
-    const alertData = await alertR.json();
-    const noiseData = await noiseR.json();
-    const noActionData = await noActionR.json();
-    suggestions = await suggestionsR.json();
+      const actionData = await actionR.json();
+      const alertData = await alertR.json();
+      const noiseData = await noiseR.json();
+      const noActionData = await noActionR.json();
+      suggestions = await suggestionsR.json();
 
-    needsCards = actionData.cards || [];
-    const mergedNoAction = [
-      ...(noActionData.cards || []),
-      ...(alertData.cards || []),
-      ...(noiseData.cards || []),
-    ];
-    const seen = new Set();
-    noActionCards = mergedNoAction.filter((card) => {
-      if (!card || seen.has(card.id)) return false;
-      seen.add(card.id);
-      return true;
-    });
-  } else {
-    const [needsR, noActionR] = await Promise.all([
-      fetch(`/api/cards?source=${source}&section=needs-action`),
-      fetch(`/api/cards?source=${source}&section=no-action`),
-    ]);
-    const needsData = await needsR.json();
-    const noActionData = await noActionR.json();
-    needsCards = needsData.cards || [];
-    noActionCards = noActionData.cards || [];
-  }
+      needsCards = actionData.cards || [];
+      const mergedNoAction = [
+        ...(noActionData.cards || []),
+        ...(alertData.cards || []),
+        ...(noiseData.cards || []),
+      ];
+      const seen = new Set();
+      noActionCards = mergedNoAction.filter((card) => {
+        if (!card || seen.has(card.id)) return false;
+        seen.add(card.id);
+        return true;
+      });
+    } else {
+      const [needsR, noActionR] = await Promise.all([
+        fetch(`/api/cards?source=${source}&section=needs-action`),
+        fetch(`/api/cards?source=${source}&section=no-action`),
+      ]);
+      const needsData = await needsR.json();
+      const noActionData = await noActionR.json();
+      needsCards = needsData.cards || [];
+      noActionCards = noActionData.cards || [];
+    }
 
-  const needsHtml = needsCards.map(c => renderSmartCard(c, source)).join('') || '<div class="section-empty">All clear</div>';
-  const noActionHtml = noActionCards.map(c => renderSmartCard(c, source)).join('') || '<div class="section-empty">Nothing here</div>';
+    const needsHtml = needsCards.map(c => renderSmartCard(c, source)).join('') || '<div class="section-empty">All clear</div>';
+    const noActionHtml = noActionCards.map(c => renderSmartCard(c, source)).join('') || '<div class="section-empty">Nothing here</div>';
 
-  let suggestionsHtml = '';
-  if (suggestions.suggestions.length) {
-    suggestionsHtml = `<div class="section-group"><div class="section-header filter-suggest">
-      <span>FILTER SUGGESTIONS</span>
-      <span class="section-count">${suggestions.suggestions.length}</span>
-    </div><div class="section-body" id="section-filters">` +
-    suggestions.suggestions.map(renderFilterSuggestion).join('') +
-    `</div></div>`;
-  }
+    let suggestionsHtml = '';
+    if (suggestions.suggestions.length) {
+      suggestionsHtml = `<div class="section-group"><div class="section-header filter-suggest">
+        <span>FILTER SUGGESTIONS</span>
+        <span class="section-count">${suggestions.suggestions.length}</span>
+      </div><div class="section-body" id="section-filters">` +
+      suggestions.suggestions.map(renderFilterSuggestion).join('') +
+      `</div></div>`;
+    }
 
-  const finalHtml = `
-    <div class="section-group">
-      <div class="section-header" onclick="toggleSection('needs')">
-        <span>NEEDS ACTION / UNREAD</span>
-        <span class="section-count">${needsCards.length}</span>
-        <span class="section-toggle" id="toggle-needs">&#9660;</span>
+    const finalHtml = `
+      <div class="section-group">
+        <div class="section-header" onclick="toggleSection('needs')">
+          <span>NEEDS ACTION / UNREAD</span>
+          <span class="section-count">${needsCards.length}</span>
+          <span class="section-toggle" id="toggle-needs">&#9660;</span>
+        </div>
+        <div class="section-body" id="section-needs">${needsHtml}</div>
       </div>
-      <div class="section-body" id="section-needs">${needsHtml}</div>
-    </div>
-    <div class="section-group">
-      <div class="section-header no-action" onclick="toggleSection('noaction')">
-        <span>RESPONDED / NO ACTION</span>
-        <span class="section-count">${noActionCards.length}</span>
-        <span class="section-toggle" id="toggle-noaction">&#9660;</span>
+      <div class="section-group">
+        <div class="section-header no-action" onclick="toggleSection('noaction')">
+          <span>RESPONDED / NO ACTION</span>
+          <span class="section-count">${noActionCards.length}</span>
+          <span class="section-toggle" id="toggle-noaction">&#9660;</span>
+        </div>
+        <div class="section-body" id="section-noaction">${noActionHtml}</div>
       </div>
-      <div class="section-body" id="section-noaction">${noActionHtml}</div>
-    </div>
-    ${suggestionsHtml}
-  `;
-  queue.innerHTML = finalHtml;
-  tabCache[cacheKey] = finalHtml;
+      ${suggestionsHtml}
+    `;
+    queue.innerHTML = finalHtml;
+    cacheSet(cacheKey, finalHtml);
+  } catch (e) {
+    if (!cached) {
+      queue.innerHTML = `<div style="color:#ea4335;padding:40px;text-align:center;">Failed to load: ${e.message}</div>`;
+    }
+  }
 }
 
 function toggleSection(name) {
@@ -273,8 +312,10 @@ async function loadCalendarView() {
   const queue = document.getElementById('queue');
   const cacheKey = 'calendar';
 
-  if (tabCache[cacheKey]) {
-    queue.innerHTML = tabCache[cacheKey];
+  const cached = cacheGet(cacheKey);
+  if (cached) {
+    queue.innerHTML = cached;
+    if (cacheIsFresh(cacheKey)) return;
   } else {
     queue.innerHTML = '<div style="color:#666;padding:40px;text-align:center;letter-spacing:4px">LOADING CALENDAR...</div>';
   }
@@ -286,7 +327,7 @@ async function loadCalendarView() {
     if (!data.cards.length) {
       const empty = '<div style="color:#444;padding:40px;text-align:center;letter-spacing:4px">NO EVENTS TODAY</div>';
       queue.innerHTML = empty;
-      tabCache[cacheKey] = empty;
+      cacheSet(cacheKey, empty);
       return;
     }
 
@@ -312,9 +353,9 @@ async function loadCalendarView() {
 
     const html = `<div class="calendar-agenda"><div class="section-header"><span>TODAY'S AGENDA</span><span class="section-count">${data.cards.length}</span></div>${eventsHtml}</div>`;
     queue.innerHTML = html;
-    tabCache[cacheKey] = html;
+    cacheSet(cacheKey, html);
   } catch (e) {
-    if (!tabCache[cacheKey]) {
+    if (!cached) {
       queue.innerHTML = `<div style="color:#ea4335;padding:40px;text-align:center;">Failed: ${e.message}</div>`;
     }
   }
@@ -618,8 +659,10 @@ async function loadTasksView() {
   const queue = document.getElementById('queue');
   const cacheKey = 'tasks';
 
-  if (tabCache[cacheKey]) {
-    queue.innerHTML = tabCache[cacheKey];
+  const cached = cacheGet(cacheKey);
+  if (cached) {
+    queue.innerHTML = cached;
+    if (cacheIsFresh(cacheKey)) return;
   } else {
     queue.innerHTML = '<div style="color:#666;padding:40px;text-align:center;letter-spacing:4px">LOADING TASKS...</div>';
   }
@@ -632,7 +675,7 @@ async function loadTasksView() {
     if (!cards.length) {
       const empty = '<div style="color:#444;padding:40px;text-align:center;letter-spacing:4px">NO ACTIVE TASKS</div>';
       queue.innerHTML = empty;
-      tabCache[cacheKey] = empty;
+      cacheSet(cacheKey, empty);
       return;
     }
 
@@ -673,9 +716,9 @@ async function loadTasksView() {
         ${section('PENDING', pending, 'tasks-pending')}
       </div>`;
     queue.innerHTML = html;
-    tabCache[cacheKey] = html;
+    cacheSet(cacheKey, html);
   } catch (e) {
-    if (!tabCache[cacheKey]) {
+    if (!cached) {
       queue.innerHTML = `<div style="color:#ea4335;padding:40px;text-align:center;">Failed to load tasks: ${e.message}</div>`;
     }
   }
@@ -725,8 +768,10 @@ async function loadSprintBoard() {
   const queue = document.getElementById('queue');
   const cacheKey = 'jira-sprint';
 
-  if (tabCache[cacheKey]) {
-    queue.innerHTML = tabCache[cacheKey];
+  const cached = cacheGet(cacheKey);
+  if (cached) {
+    queue.innerHTML = cached;
+    if (cacheIsFresh(cacheKey)) return;
   } else {
     queue.innerHTML = '<div style="color:#666;padding:40px;text-align:center;letter-spacing:4px">LOADING SPRINT...</div>';
   }
@@ -736,9 +781,9 @@ async function loadSprintBoard() {
     const data = await r.json();
     const html = renderSprintBoard(data.board);
     queue.innerHTML = html;
-    tabCache[cacheKey] = html;
+    cacheSet(cacheKey, html);
   } catch (e) {
-    if (!tabCache[cacheKey]) {
+    if (!cached) {
       queue.innerHTML = `<div style="color:#ea4335;padding:40px;text-align:center;">Failed to load sprint: ${e.message}</div>`;
     }
   }
@@ -763,9 +808,10 @@ async function loadQueue(source = 'all') {
   const queue = document.getElementById('queue');
   const cacheKey = `queue-${source}`;
 
-  // Show cached content instantly if available, then refresh in background
-  if (tabCache[cacheKey]) {
-    queue.innerHTML = tabCache[cacheKey];
+  const cached = cacheGet(cacheKey);
+  if (cached) {
+    queue.innerHTML = cached;
+    if (cacheIsFresh(cacheKey)) return;
   } else {
     queue.innerHTML = '<div style="color:#666;padding:40px;text-align:center;letter-spacing:4px">LOADING...</div>';
   }
@@ -782,14 +828,14 @@ async function loadQueue(source = 'all') {
     if (!allCards.length) {
       const empty = '<div style="color:#444;padding:40px;text-align:center;letter-spacing:4px">QUEUE EMPTY</div>';
       queue.innerHTML = empty;
-      tabCache[cacheKey] = empty;
+      cacheSet(cacheKey, empty);
       return;
     }
     const html = allCards.map(renderCard).join('');
     queue.innerHTML = html;
-    tabCache[cacheKey] = html;
+    cacheSet(cacheKey, html);
   } catch (e) {
-    if (!tabCache[cacheKey]) {
+    if (!cached) {
       queue.innerHTML = `<div style="color:#ea4335;padding:40px;text-align:center;">Failed to load: ${e.message}</div>`;
     }
   }
@@ -822,6 +868,15 @@ document.querySelectorAll('.filter-btn[data-source]').forEach(btn => {
 
 function connectSSE() {
   const es = new EventSource('/api/events');
+
+  // Handle cache-invalidate events — mark source caches as stale
+  es.addEventListener('cache-invalidate', (e) => {
+    try {
+      const { source } = JSON.parse(e.data);
+      if (source) cacheInvalidateSource(source);
+    } catch {}
+  });
+
   es.onmessage = (e) => {
     try {
       const card = JSON.parse(e.data);
