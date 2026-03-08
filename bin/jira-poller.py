@@ -5,11 +5,16 @@ Fetches Jira issues assigned to current user since last check.
 Writes cards to inbox.db.
 """
 import json
+import os
 import re
 import sqlite3
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
+
+# Strip CLAUDECODE env var so subprocess claude calls don't fail with
+# "nested session" error when eng-buddy is launched from Claude Code.
+_claude_env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
 
 BASE_DIR = Path.home() / ".claude" / "eng-buddy"
 STATE_FILE = BASE_DIR / "jira-ingestor-state.json"
@@ -41,7 +46,7 @@ def fetch_jira_issues():
     )
     result = subprocess.run(
         ["claude", "--dangerously-skip-permissions", "--print", prompt],
-        capture_output=True, text=True, timeout=60
+        capture_output=True, text=True, timeout=60, env=_claude_env
     )
     output = result.stdout.strip()
     # Extract JSON array from output
