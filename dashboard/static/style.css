@@ -601,3 +601,35 @@ body {
   font-style: italic;
   border-top: 1px solid #222;
 }
+
+/* -- Tasks view -- */
+.tasks-view { padding: 0 8px; }
+.task-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 16px;
+  border-bottom: 1px solid #222;
+}
+.task-row:hover { background: #1a1a1a; }
+.task-num { font-weight: 700; font-size: 14px; color: var(--muted); min-width: 36px; }
+.task-info { flex: 1; min-width: 0; }
+.task-title { font-weight: 700; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.task-desc { font-size: 11px; color: var(--muted); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.task-meta { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.task-jira-link { font-size: 11px; color: var(--jira); text-decoration: none; font-weight: 700; }
+.task-jira-link:hover { text-decoration: underline; }
+.task-prio, .task-status {
+  font-size: 10px; font-weight: 700; letter-spacing: 1px; padding: 2px 8px; border: 1px solid;
+}
+.task-prio.prio-critical { color: #ff4444; border-color: #ff4444; }
+.task-prio.prio-high { color: #f59e0b; border-color: #f59e0b; }
+.task-prio.prio-medium { color: var(--muted); border-color: #444; }
+.task-prio.prio-low { color: #555; border-color: #333; }
+.task-status.status-progress { color: var(--jira); border-color: var(--jira); }
+.task-status.status-blocked { color: #ff4444; border-color: #ff4444; }
+.task-status.status-pending { color: var(--muted); border-color: #444; }
+.tasks-progress .section-header { color: var(--jira); }
+.tasks-blocked .section-header { color: #ff4444; }
+.tasks-pending .section-header { color: var(--muted); }
+.tasks-completed-note { padding: 16px; text-align: center; color: #444; font-size: 11px; letter-spacing: 2px; }

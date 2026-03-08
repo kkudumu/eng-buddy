@@ -584,6 +584,89 @@ async function sendRefine(id) {
   history.scrollTop = history.scrollHeight;
 }
 
+// -- Tasks view (from active-tasks.md) ----------------------------------------
+
+function renderTask(task) {
+  const prioClass = task.priority === 'critical' ? 'prio-critical'
+    : task.priority === 'high' ? 'prio-high'
+    : task.priority === 'low' ? 'prio-low' : 'prio-medium';
+  const statusClass = task.status === 'in_progress' ? 'status-progress'
+    : task.status === 'blocked' ? 'status-blocked' : 'status-pending';
+  const statusLabel = task.status === 'in_progress' ? 'IN PROGRESS'
+    : task.status === 'blocked' ? 'BLOCKED'
+    : 'PENDING';
+  const jiraLink = task.jira_key
+    ? `<a href="https://klaviyo.atlassian.net/browse/${escHtml(task.jira_key)}" target="_blank" class="task-jira-link">${escHtml(task.jira_key)}</a>`
+    : '';
+
+  return `
+    <div class="task-row ${prioClass} ${statusClass}">
+      <div class="task-num">#${task.num}</div>
+      <div class="task-info">
+        <div class="task-title">${escHtml(task.title)}</div>
+        ${task.description ? `<div class="task-desc">${escHtml(task.description).slice(0, 120)}</div>` : ''}
+      </div>
+      <div class="task-meta">
+        ${jiraLink}
+        <span class="task-prio ${prioClass}">${task.priority.toUpperCase()}</span>
+        <span class="task-status ${statusClass}">${statusLabel}</span>
+      </div>
+    </div>`;
+}
+
+async function loadTasksView() {
+  const queue = document.getElementById('queue');
+  const cacheKey = 'tasks';
+
+  if (tabCache[cacheKey]) {
+    queue.innerHTML = tabCache[cacheKey];
+  } else {
+    queue.innerHTML = '<div style="color:#666;padding:40px;text-align:center;letter-spacing:4px">LOADING TASKS...</div>';
+  }
+
+  try {
+    const r = await fetch('/api/tasks');
+    const data = await r.json();
+
+    if (!data.tasks.length) {
+      const empty = '<div style="color:#444;padding:40px;text-align:center;letter-spacing:4px">NO ACTIVE TASKS</div>';
+      queue.innerHTML = empty;
+      tabCache[cacheKey] = empty;
+      return;
+    }
+
+    const inProgress = data.tasks.filter(t => t.status === 'in_progress');
+    const blocked = data.tasks.filter(t => t.status === 'blocked');
+    const pending = data.tasks.filter(t => t.status === 'pending');
+
+    const section = (title, items, cls) => {
+      if (!items.length) return '';
+      return `
+        <div class="section-group">
+          <div class="section-header ${cls}">
+            <span>${title}</span>
+            <span class="section-count">${items.length}</span>
+          </div>
+          <div class="section-body">${items.map(renderTask).join('')}</div>
+        </div>`;
+    };
+
+    const html = `
+      <div class="tasks-view">
+        ${section('IN PROGRESS', inProgress, 'tasks-progress')}
+        ${section('BLOCKED', blocked, 'tasks-blocked')}
+        ${section('PENDING', pending, 'tasks-pending')}
+        <div class="tasks-completed-note">${data.completed_count} completed tasks hidden</div>
+      </div>`;
+    queue.innerHTML = html;
+    tabCache[cacheKey] = html;
+  } catch (e) {
+    if (!tabCache[cacheKey]) {
+      queue.innerHTML = `<div style="color:#ea4335;padding:40px;text-align:center;">Failed to load tasks: ${e.message}</div>`;
+    }
+  }
+}
+
 // -- Jira Sprint Board --------------------------------------------------------
 
 function statusColor(status) {
@@ -705,7 +788,9 @@ document.querySelectorAll('.filter-btn[data-source]').forEach(btn => {
     document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     activeFilter = btn.dataset.source;
-    if (activeFilter === 'slack') {
+    if (activeFilter === 'tasks') {
+      loadTasksView();
+    } else if (activeFilter === 'slack') {
       loadTwoSectionView('slack');
     } else if (activeFilter === 'gmail') {
       loadTwoSectionView('gmail');
@@ -732,7 +817,7 @@ function connectSSE() {
       if (activeFilter === 'all' || activeFilter === card.source) {
         // Skip live injection for views with custom renderers (Jira board,
         // Gmail/Slack two-section, Calendar) — a full reload is needed.
-        if (['jira', 'slack', 'gmail', 'calendar'].includes(activeFilter)) {
+        if (['tasks', 'jira', 'slack', 'gmail', 'calendar'].includes(activeFilter)) {
           // Silently skip — counts are already updated above
         } else {
           const queue = document.getElementById('queue');

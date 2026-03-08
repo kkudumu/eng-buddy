@@ -55,6 +55,75 @@ async def health():
     return {"status": "ok"}
 
 
+@app.get("/api/tasks")
+async def get_tasks():
+    """Parse active-tasks.md and return structured task list."""
+    tasks_file = Path.home() / ".claude" / "eng-buddy" / "tasks" / "active-tasks.md"
+    if not tasks_file.exists():
+        return {"tasks": [], "raw": ""}
+
+    content = tasks_file.read_text()
+    tasks = []
+    current = None
+
+    for line in content.split("\n"):
+        # Match task headers like "### #1 - Task name" or "### #1 - Task name [ITWORK2-1234]"
+        m = re.match(r"^###\s+#(\d+)\s*[-–—]\s*(.+)", line)
+        if m:
+            if current:
+                tasks.append(current)
+            task_num = int(m.group(1))
+            title_raw = m.group(2).strip()
+            # Extract Jira key if present
+            jira_match = re.search(r"\[([A-Z]+-\d+)\]", title_raw)
+            jira_key = jira_match.group(1) if jira_match else None
+            title = re.sub(r"\s*\[[A-Z]+-\d+\]", "", title_raw).strip()
+            # Check for completion markers
+            completed = bool(re.search(r"✅|completed|CLOSED", title_raw, re.IGNORECASE))
+            current = {
+                "num": task_num,
+                "title": title,
+                "jira_key": jira_key,
+                "status": "completed" if completed else "pending",
+                "priority": "medium",
+                "description": "",
+            }
+        elif current:
+            sl = line.strip()
+            if sl.startswith("**Status**:"):
+                val = sl.split(":", 1)[1].strip().strip("*").lower()
+                if "completed" in val or "closed" in val:
+                    current["status"] = "completed"
+                elif "in_progress" in val or "in progress" in val:
+                    current["status"] = "in_progress"
+                elif "blocked" in val:
+                    current["status"] = "blocked"
+                else:
+                    current["status"] = "pending"
+            elif sl.startswith("**Priority**:"):
+                val = sl.split(":", 1)[1].strip().strip("*").lower()
+                if "critical" in val:
+                    current["priority"] = "critical"
+                elif "high" in val:
+                    current["priority"] = "high"
+                elif "low" in val:
+                    current["priority"] = "low"
+                else:
+                    current["priority"] = "medium"
+            elif sl.startswith("**Description**:"):
+                current["description"] = sl.split(":", 1)[1].strip().strip("*")
+
+    if current:
+        tasks.append(current)
+
+    # Filter out completed tasks, sort by priority
+    prio_order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+    active = [t for t in tasks if t["status"] != "completed"]
+    active.sort(key=lambda t: prio_order.get(t["priority"], 2))
+
+    return {"tasks": active, "completed_count": sum(1 for t in tasks if t["status"] == "completed")}
+
+
 @app.post("/api/restart")
 async def restart_server():
     """Restart the dashboard: spawn start.sh after a short delay so this process can exit."""
