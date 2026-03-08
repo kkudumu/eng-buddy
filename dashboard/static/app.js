@@ -3,6 +3,7 @@
 let activeFilter = 'all';
 let allCards = [];
 const runningTerminals = {};
+const tabCache = {};  // { filterName: htmlString }
 
 // -- Helpers ------------------------------------------------------------------
 
@@ -168,7 +169,13 @@ function renderSmartCard(card, source) {
 
 async function loadTwoSectionView(source) {
   const queue = document.getElementById('queue');
-  queue.innerHTML = '<div style="color:#666;padding:40px;text-align:center;letter-spacing:4px">LOADING...</div>';
+  const cacheKey = `twosection-${source}`;
+
+  if (tabCache[cacheKey]) {
+    queue.innerHTML = tabCache[cacheKey];
+  } else {
+    queue.innerHTML = '<div style="color:#666;padding:40px;text-align:center;letter-spacing:4px">LOADING...</div>';
+  }
 
   let needsCards = [];
   let noActionCards = [];
@@ -225,7 +232,7 @@ async function loadTwoSectionView(source) {
     `</div></div>`;
   }
 
-  queue.innerHTML = `
+  const finalHtml = `
     <div class="section-group">
       <div class="section-header" onclick="toggleSection('needs')">
         <span>NEEDS ACTION / UNREAD</span>
@@ -244,6 +251,8 @@ async function loadTwoSectionView(source) {
     </div>
     ${suggestionsHtml}
   `;
+  queue.innerHTML = finalHtml;
+  tabCache[cacheKey] = finalHtml;
 }
 
 function toggleSection(name) {
@@ -262,14 +271,22 @@ function toggleSection(name) {
 
 async function loadCalendarView() {
   const queue = document.getElementById('queue');
-  queue.innerHTML = '<div style="color:#666;padding:40px;text-align:center;letter-spacing:4px">LOADING CALENDAR...</div>';
+  const cacheKey = 'calendar';
+
+  if (tabCache[cacheKey]) {
+    queue.innerHTML = tabCache[cacheKey];
+  } else {
+    queue.innerHTML = '<div style="color:#666;padding:40px;text-align:center;letter-spacing:4px">LOADING CALENDAR...</div>';
+  }
 
   try {
     const r = await fetch('/api/cards?source=calendar');
     const data = await r.json();
 
     if (!data.cards.length) {
-      queue.innerHTML = '<div style="color:#444;padding:40px;text-align:center;letter-spacing:4px">NO EVENTS TODAY</div>';
+      const empty = '<div style="color:#444;padding:40px;text-align:center;letter-spacing:4px">NO EVENTS TODAY</div>';
+      queue.innerHTML = empty;
+      tabCache[cacheKey] = empty;
       return;
     }
 
@@ -293,9 +310,13 @@ async function loadCalendarView() {
         </div>`;
     }).join('');
 
-    queue.innerHTML = `<div class="calendar-agenda"><div class="section-header"><span>TODAY'S AGENDA</span><span class="section-count">${data.cards.length}</span></div>${eventsHtml}</div>`;
+    const html = `<div class="calendar-agenda"><div class="section-header"><span>TODAY'S AGENDA</span><span class="section-count">${data.cards.length}</span></div>${eventsHtml}</div>`;
+    queue.innerHTML = html;
+    tabCache[cacheKey] = html;
   } catch (e) {
-    queue.innerHTML = `<div style="color:#ea4335;padding:40px;text-align:center;">Failed: ${e.message}</div>`;
+    if (!tabCache[cacheKey]) {
+      queue.innerHTML = `<div style="color:#ea4335;padding:40px;text-align:center;">Failed: ${e.message}</div>`;
+    }
   }
 }
 
@@ -605,13 +626,24 @@ function renderSprintBoard(board) {
 
 async function loadSprintBoard() {
   const queue = document.getElementById('queue');
-  queue.innerHTML = '<div style="color:#666;padding:40px;text-align:center;letter-spacing:4px">LOADING SPRINT...</div>';
+  const cacheKey = 'jira-sprint';
+
+  if (tabCache[cacheKey]) {
+    queue.innerHTML = tabCache[cacheKey];
+  } else {
+    queue.innerHTML = '<div style="color:#666;padding:40px;text-align:center;letter-spacing:4px">LOADING SPRINT...</div>';
+  }
+
   try {
     const r = await fetch('/api/jira/sprint');
     const data = await r.json();
-    queue.innerHTML = renderSprintBoard(data.board);
+    const html = renderSprintBoard(data.board);
+    queue.innerHTML = html;
+    tabCache[cacheKey] = html;
   } catch (e) {
-    queue.innerHTML = `<div style="color:#ea4335;padding:40px;text-align:center;">Failed to load sprint: ${e.message}</div>`;
+    if (!tabCache[cacheKey]) {
+      queue.innerHTML = `<div style="color:#ea4335;padding:40px;text-align:center;">Failed to load sprint: ${e.message}</div>`;
+    }
   }
 }
 
@@ -631,20 +663,39 @@ function updateCounts() {
 // -- Load queue ---------------------------------------------------------------
 
 async function loadQueue(source = 'all') {
-  const url = source === 'all' ? '/api/cards' : `/api/cards?source=${source}`;
-  const r = await fetch(url);
-  const data = await r.json();
-  allCards = data.cards;
-
-  document.getElementById('count-pending').textContent = `${data.counts.pending || 0} pending`;
-  document.getElementById('count-held').textContent = `${data.counts.held || 0} held`;
-
   const queue = document.getElementById('queue');
-  if (!allCards.length) {
-    queue.innerHTML = '<div style="color:#444;padding:40px;text-align:center;letter-spacing:4px">QUEUE EMPTY</div>';
-    return;
+  const cacheKey = `queue-${source}`;
+
+  // Show cached content instantly if available, then refresh in background
+  if (tabCache[cacheKey]) {
+    queue.innerHTML = tabCache[cacheKey];
+  } else {
+    queue.innerHTML = '<div style="color:#666;padding:40px;text-align:center;letter-spacing:4px">LOADING...</div>';
   }
-  queue.innerHTML = allCards.map(renderCard).join('');
+
+  try {
+    const url = source === 'all' ? '/api/cards' : `/api/cards?source=${source}`;
+    const r = await fetch(url);
+    const data = await r.json();
+    allCards = data.cards;
+
+    document.getElementById('count-pending').textContent = `${data.counts.pending || 0} pending`;
+    document.getElementById('count-held').textContent = `${data.counts.held || 0} held`;
+
+    if (!allCards.length) {
+      const empty = '<div style="color:#444;padding:40px;text-align:center;letter-spacing:4px">QUEUE EMPTY</div>';
+      queue.innerHTML = empty;
+      tabCache[cacheKey] = empty;
+      return;
+    }
+    const html = allCards.map(renderCard).join('');
+    queue.innerHTML = html;
+    tabCache[cacheKey] = html;
+  } catch (e) {
+    if (!tabCache[cacheKey]) {
+      queue.innerHTML = `<div style="color:#ea4335;padding:40px;text-align:center;">Failed to load: ${e.message}</div>`;
+    }
+  }
 }
 
 // -- Filters ------------------------------------------------------------------
@@ -754,12 +805,13 @@ async function init() {
   connectSSE();
   loadTerminalSetting();
 
-  // Show briefing on first load of the day
+  // Show briefing on first load of the day or after a server restart
+  // sessionStorage resets when the tab is opened fresh (e.g. after restart)
   const today = new Date().toISOString().slice(0, 10);
-  const lastBriefing = localStorage.getItem('eng-buddy-last-briefing');
-  if (lastBriefing !== today) {
+  const briefingShown = sessionStorage.getItem('eng-buddy-briefing-shown');
+  if (briefingShown !== today) {
     await loadBriefing();
-    localStorage.setItem('eng-buddy-last-briefing', today);
+    sessionStorage.setItem('eng-buddy-briefing-shown', today);
   }
 }
 
