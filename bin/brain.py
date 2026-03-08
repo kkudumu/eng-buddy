@@ -1,19 +1,47 @@
-# bin/brain.py
 """
 eng-buddy Learning Engine.
 Builds context prompts from persistent memory and parses Claude responses
 for new patterns, stakeholder updates, and automation opportunities.
 """
+import argparse
 import json
 import re
 import sqlite3
-from datetime import datetime
+import sys
+from datetime import date, datetime
 from pathlib import Path
 
-MEMORY_DIR = Path.home() / ".claude" / "eng-buddy" / "memory"
+ENG_BUDDY_DIR = Path.home() / ".claude" / "eng-buddy"
+MEMORY_DIR = ENG_BUDDY_DIR / "memory"
 MEMORY_DIR.mkdir(exist_ok=True)
 
-DB_PATH = Path.home() / ".claude" / "eng-buddy" / "inbox.db"
+DB_PATH = ENG_BUDDY_DIR / "inbox.db"
+DAILY_DIR = ENG_BUDDY_DIR / "daily"
+PATTERNS_DIR = ENG_BUDDY_DIR / "patterns"
+STAKEHOLDERS_DIR = ENG_BUDDY_DIR / "stakeholders"
+KNOWLEDGE_DIR = ENG_BUDDY_DIR / "knowledge"
+
+UNMAPPED_LEARNING_PATH = PATTERNS_DIR / "uncategorized-learning.md"
+UNMAPPED_LEARNING_HEADING = "## AI Captured Uncategorized Learning"
+
+WRITE_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
+TASK_TOOLS = {"Bash", "Task"}
+ACTION_MCP_PROVIDERS = {
+    "mcp-atlassian",
+    "freshservice-mcp",
+    "gmail",
+    "google-calendar",
+    "slack",
+    "lusha",
+    "git",
+}
+READ_ONLY_MCP_PROVIDERS = {
+    "context7",
+    "apple-doc-mcp",
+    "glean_default",
+    "playwright",
+    "sequential-thinking",
+}
 
 
 def _load(name, default=None):
@@ -44,6 +72,350 @@ def load_patterns():
 
 def load_traces():
     return _load("traces.json", {"traces": []})
+
+
+def _normalize_category(name: str) -> str:
+    if not name:
+        return ""
+    normalized = re.sub(r"[^a-z0-9_-]+", "-", str(name).strip().lower())
+    normalized = re.sub(r"-+", "-", normalized).strip("-")
+    return normalized
+
+
+def _default_learning_routes():
+    today_file = DAILY_DIR / f"{date.today().isoformat()}.md"
+    return {
+        "playbook": {
+            "path": KNOWLEDGE_DIR / "runbooks.md",
+            "heading": "## AI Captured Playbooks",
+            "description": "Reusable work playbooks and runbook snippets",
+            "source": "system",
+        },
+        "stakeholder": {
+            "path": STAKEHOLDERS_DIR / "communication-log.md",
+            "heading": "## AI Captured Stakeholder Notes",
+            "description": "Stakeholder communication notes",
+            "source": "system",
+        },
+        "personal": {
+            "path": today_file,
+            "heading": "## Personal Notes",
+            "description": "Personal productivity notes for today",
+            "source": "system",
+        },
+        "troubleshooting": {
+            "path": PATTERNS_DIR / "recurring-issues.md",
+            "heading": "## AI Captured Troubleshooting Patterns",
+            "description": "Recurring issues and fixes",
+            "source": "system",
+        },
+        "success-pattern": {
+            "path": PATTERNS_DIR / "success-patterns.md",
+            "heading": "## AI Captured Success Patterns",
+            "description": "Patterns behind successful outcomes",
+            "source": "system",
+        },
+        "failure-pattern": {
+            "path": PATTERNS_DIR / "failure-patterns.md",
+            "heading": "## AI Captured Failure Patterns",
+            "description": "Patterns behind failed outcomes",
+            "source": "system",
+        },
+        "recurring-question": {
+            "path": PATTERNS_DIR / "recurring-questions.md",
+            "heading": "## AI Captured Questions",
+            "description": "Frequently recurring questions",
+            "source": "system",
+        },
+        "documentation-gap": {
+            "path": PATTERNS_DIR / "documentation-gaps.md",
+            "heading": "## AI Captured Documentation Gaps",
+            "description": "Missing docs and runbook gaps",
+            "source": "system",
+        },
+        "task-execution": {
+            "path": PATTERNS_DIR / "task-execution.md",
+            "heading": "## AI Captured Task Execution Learnings",
+            "description": "Learned signals from finished task operations",
+            "source": "system",
+        },
+        "writing-update": {
+            "path": KNOWLEDGE_DIR / "writing-updates.md",
+            "heading": "## AI Captured Writing Updates",
+            "description": "Learned signals from file writes and edits",
+            "source": "system",
+        },
+    }
+
+
+def _load_custom_learning_categories():
+    data = _load("learning-categories.json", {"categories": {}})
+    if not isinstance(data, dict):
+        return {"categories": {}}
+    categories = data.get("categories")
+    if not isinstance(categories, dict):
+        return {"categories": {}}
+    return {"categories": categories}
+
+
+def _save_custom_learning_categories(data):
+    _save("learning-categories.json", data)
+
+
+def get_learning_routes():
+    routes = _default_learning_routes()
+    custom = _load_custom_learning_categories().get("categories", {})
+
+    for raw_name, meta in custom.items():
+        if not isinstance(meta, dict):
+            continue
+        bucket = _normalize_category(raw_name)
+        if not bucket:
+            continue
+
+        path_raw = str(meta.get("path", "")).strip()
+        if path_raw:
+            path = Path(path_raw).expanduser()
+            if not path.is_absolute():
+                path = ENG_BUDDY_DIR / path
+        else:
+            path = KNOWLEDGE_DIR / f"{bucket}.md"
+
+        heading = str(meta.get("heading", "")).strip() or f"## AI Captured {bucket.replace('-', ' ').title()}"
+        description = str(meta.get("description", "")).strip() or "User-defined learning category"
+
+        routes[bucket] = {
+            "path": path,
+            "heading": heading,
+            "description": description,
+            "source": "custom",
+        }
+
+    return routes
+
+
+def list_learning_buckets():
+    return sorted(get_learning_routes().keys())
+
+
+def _ensure_learning_schema():
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS learning_categories (
+                name TEXT PRIMARY KEY,
+                description TEXT,
+                source TEXT NOT NULL DEFAULT 'system',
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )"""
+        )
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS learning_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT,
+                hook_event TEXT,
+                source TEXT,
+                scope TEXT,
+                tool_name TEXT,
+                category TEXT,
+                title TEXT,
+                note TEXT,
+                status TEXT NOT NULL DEFAULT 'captured',
+                requires_category_expansion INTEGER NOT NULL DEFAULT 0,
+                proposed_category TEXT,
+                metadata TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )"""
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_learning_events_session ON learning_events(session_id, created_at)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_learning_events_category ON learning_events(category, created_at)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_learning_events_pending ON learning_events(requires_category_expansion, created_at)"
+        )
+
+        for bucket, meta in get_learning_routes().items():
+            conn.execute(
+                """INSERT OR IGNORE INTO learning_categories (name, description, source)
+                   VALUES (?, ?, ?)""",
+                [bucket, meta.get("description", ""), meta.get("source", "system")],
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _record_learning_event(
+    *,
+    session_id: str = "",
+    hook_event: str = "",
+    source: str = "",
+    scope: str = "",
+    tool_name: str = "",
+    category: str = "",
+    title: str = "",
+    note: str = "",
+    status: str = "captured",
+    requires_category_expansion: bool = False,
+    proposed_category: str = "",
+    metadata=None,
+):
+    _ensure_learning_schema()
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        conn.execute(
+            """INSERT INTO learning_events (
+                    session_id, hook_event, source, scope, tool_name,
+                    category, title, note, status,
+                    requires_category_expansion, proposed_category, metadata
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                session_id or "",
+                hook_event or "",
+                source or "",
+                scope or "",
+                tool_name or "",
+                category or "",
+                title or "",
+                note or "",
+                status,
+                1 if requires_category_expansion else 0,
+                proposed_category or "",
+                json.dumps(metadata or {}),
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def register_learning_category(name: str, description: str = "", path: str = "", heading: str = ""):
+    bucket = _normalize_category(name)
+    if not bucket:
+        raise ValueError("category name is required")
+
+    resolved_path = path.strip() if path else f"knowledge/{bucket}.md"
+    resolved_heading = heading.strip() if heading else f"## AI Captured {bucket.replace('-', ' ').title()}"
+    resolved_description = description.strip() if description else "User-approved custom learning category"
+
+    custom = _load_custom_learning_categories()
+    custom.setdefault("categories", {})[bucket] = {
+        "path": resolved_path,
+        "heading": resolved_heading,
+        "description": resolved_description,
+    }
+    _save_custom_learning_categories(custom)
+
+    _ensure_learning_schema()
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        conn.execute(
+            """INSERT INTO learning_categories (name, description, source)
+               VALUES (?, ?, 'custom')
+               ON CONFLICT(name) DO UPDATE SET
+                 description = excluded.description,
+                 source = 'custom'""",
+            [bucket, resolved_description],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    return {
+        "added": True,
+        "category": bucket,
+        "path": resolved_path,
+        "heading": resolved_heading,
+        "description": resolved_description,
+    }
+
+
+def _append_markdown_note(path: Path, heading: str, line: str):
+    """Append a single bullet line under a heading in markdown file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+    bullet = f"- {timestamp} | {line.strip()}"
+
+    if not path.exists():
+        title = path.stem.replace("-", " ").title()
+        path.write_text(f"# {title}\n\n{heading}\n{bullet}\n", encoding="utf-8")
+        return
+
+    content = path.read_text(encoding="utf-8")
+    if bullet in content:
+        return
+
+    lines = content.splitlines()
+    heading_idx = next((i for i, h in enumerate(lines) if h.strip() == heading), None)
+
+    if heading_idx is None:
+        if lines and lines[-1].strip():
+            lines.append("")
+        lines.extend([heading, bullet])
+    else:
+        insert_at = heading_idx + 1
+        if insert_at < len(lines) and lines[insert_at].strip() == "":
+            insert_at += 1
+        lines.insert(insert_at, bullet)
+
+    path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+
+
+def _route_learning_logs(entries):
+    """Route structured learning notes into long-lived markdown knowledge files."""
+    if not entries:
+        return []
+
+    routes = get_learning_routes()
+    pending_expansion = []
+
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+
+        bucket = _normalize_category(str(entry.get("bucket", "troubleshooting")))
+        title = str(entry.get("title", "")).strip()
+        note = str(entry.get("note", "")).strip()
+        if not note:
+            continue
+
+        line = f"{title}: {note}" if title else note
+
+        if bucket in routes:
+            route = routes[bucket]
+            _append_markdown_note(route["path"], route["heading"], line)
+            _record_learning_event(
+                source="learning-log",
+                scope="ai_response",
+                category=bucket,
+                title=title,
+                note=note,
+                status="captured",
+                metadata={"entry": entry},
+            )
+            continue
+
+        proposed_bucket = bucket or "uncategorized"
+        pending_expansion.append(proposed_bucket)
+        _append_markdown_note(UNMAPPED_LEARNING_PATH, UNMAPPED_LEARNING_HEADING, line)
+        _record_learning_event(
+            source="learning-log",
+            scope="ai_response",
+            category="",
+            title=title,
+            note=note,
+            status="needs_category_expansion",
+            requires_category_expansion=True,
+            proposed_category=proposed_bucket,
+            metadata={"entry": entry},
+        )
+
+    return sorted(set(pending_expansion))
 
 
 def load_decisions(query, limit=5):
@@ -155,6 +527,8 @@ def build_context_prompt(batch_items=None):
     if not decisions_str:
         decisions_str = "  No similar past decisions found."
 
+    learning_buckets = "|".join(list_learning_buckets())
+
     return f"""You are eng-buddy, an intelligent work assistant for {ctx.get('role', 'an engineer')} at {ctx.get('company', 'a company')}.
 Manager: {ctx.get('manager', 'unknown')}
 Team: {ctx.get('team', 'unknown')}
@@ -181,6 +555,7 @@ AFTER completing your primary task, also output these sections if applicable (as
 - <!--AUTOMATION_OPPORTUNITIES-->: [{{"observation": "...", "suggestion": "..."}}]
 - <!--LEARNED_RULES-->: ["rule text", ...]
 - <!--WORK_TRACES-->: [{{"trigger": "...", "category": "...", "step_observed": "..."}}]
+- <!--LEARNING_LOGS-->: [{{"bucket":"{learning_buckets}","title":"...","note":"..."}}]
 """
 
 
@@ -192,6 +567,7 @@ def parse_learning(claude_response):
         "AUTOMATION_OPPORTUNITIES": _parse_section(claude_response, "AUTOMATION_OPPORTUNITIES"),
         "LEARNED_RULES": _parse_section(claude_response, "LEARNED_RULES"),
         "WORK_TRACES": _parse_section(claude_response, "WORK_TRACES"),
+        "LEARNING_LOGS": _parse_section(claude_response, "LEARNING_LOGS"),
     }
 
     if sections["STAKEHOLDER_UPDATES"]:
@@ -252,6 +628,11 @@ def parse_learning(claude_response):
         tr["traces"] = tr["traces"][-500:]
         _save("traces.json", tr)
 
+    pending_categories = []
+    if sections["LEARNING_LOGS"]:
+        pending_categories = _route_learning_logs(sections["LEARNING_LOGS"])
+
+    sections["PENDING_CATEGORY_EXPANSIONS"] = pending_categories
     return sections
 
 
@@ -265,3 +646,182 @@ def _parse_section(text, section_name):
         except json.JSONDecodeError:
             pass
     return []
+
+
+def _extract_tool_name_parts(tool_name: str):
+    if not tool_name.startswith("mcp__"):
+        return "", ""
+    parts = tool_name.split("__")
+    provider = parts[1] if len(parts) > 1 else ""
+    action = parts[2] if len(parts) > 2 else ""
+    return provider, action
+
+
+def _classify_post_tool_category(tool_name: str, tool_input: dict):
+    if tool_name in WRITE_TOOLS:
+        return "writing-update", ""
+
+    if tool_name in TASK_TOOLS:
+        return "task-execution", ""
+
+    if tool_name.startswith("mcp__"):
+        provider, _action = _extract_tool_name_parts(tool_name)
+        if provider in ACTION_MCP_PROVIDERS:
+            return "task-execution", ""
+        if provider in READ_ONLY_MCP_PROVIDERS:
+            return "", ""
+
+        proposed = _normalize_category(f"integration-{provider or 'unknown'}")
+        return "", proposed
+
+    return "", ""
+
+
+def _summarize_post_tool_learning(tool_name: str, tool_input: dict):
+    if not isinstance(tool_input, dict):
+        tool_input = {}
+
+    if tool_name in WRITE_TOOLS:
+        file_path = str(tool_input.get("file_path", "")).strip()
+        if not file_path and isinstance(tool_input.get("files"), list):
+            file_path = ", ".join(str(p) for p in tool_input.get("files", [])[:3])
+        if file_path:
+            return "File update", f"{tool_name} completed on {file_path}"
+        return "File update", f"{tool_name} completed"
+
+    if tool_name == "Bash":
+        command = str(tool_input.get("command", "")).strip()
+        if len(command) > 180:
+            command = command[:177] + "..."
+        if command:
+            return "Task execution", f"Bash command completed: {command}"
+        return "Task execution", "Bash command completed"
+
+    if tool_name.startswith("mcp__"):
+        provider, action = _extract_tool_name_parts(tool_name)
+        provider_label = provider or "unknown"
+        action_label = action or "operation"
+        return "External integration", f"{provider_label} {action_label} completed"
+
+    return "Task execution", f"{tool_name} completed"
+
+
+def capture_post_tool_learning(payload: dict):
+    """Capture PostToolUse learning into DB/markdown routes."""
+    if not isinstance(payload, dict):
+        return {"recorded": False, "reason": "invalid_payload"}
+
+    tool_name = str(payload.get("tool_name", "")).strip()
+    tool_input = payload.get("tool_input")
+    if isinstance(tool_input, str):
+        try:
+            tool_input = json.loads(tool_input)
+        except json.JSONDecodeError:
+            tool_input = {"raw": tool_input}
+    if not isinstance(tool_input, dict):
+        tool_input = {}
+
+    category, proposed_category = _classify_post_tool_category(tool_name, tool_input)
+    if not category and not proposed_category:
+        return {"recorded": False, "reason": "untracked_tool"}
+
+    title, note = _summarize_post_tool_learning(tool_name, tool_input)
+    session_id = str(payload.get("session_id", ""))
+
+    if category:
+        routes = get_learning_routes()
+        route = routes.get(category)
+        if route:
+            _append_markdown_note(route["path"], route["heading"], note)
+            _record_learning_event(
+                session_id=session_id,
+                hook_event="PostToolUse",
+                source="hook",
+                scope="tool_completion",
+                tool_name=tool_name,
+                category=category,
+                title=title,
+                note=note,
+                status="captured",
+                metadata={"tool_input": tool_input},
+            )
+            return {
+                "recorded": True,
+                "category": category,
+                "needs_category_expansion": False,
+                "title": title,
+                "note": note,
+            }
+
+        proposed_category = category
+
+    # Category couldn't be routed: capture as pending and ask user later.
+    _append_markdown_note(UNMAPPED_LEARNING_PATH, UNMAPPED_LEARNING_HEADING, note)
+    _record_learning_event(
+        session_id=session_id,
+        hook_event="PostToolUse",
+        source="hook",
+        scope="tool_completion",
+        tool_name=tool_name,
+        category="",
+        title=title,
+        note=note,
+        status="needs_category_expansion",
+        requires_category_expansion=True,
+        proposed_category=proposed_category,
+        metadata={"tool_input": tool_input},
+    )
+    return {
+        "recorded": True,
+        "category": "",
+        "needs_category_expansion": True,
+        "proposed_category": proposed_category,
+        "title": title,
+        "note": note,
+    }
+
+
+def _cli():
+    parser = argparse.ArgumentParser(description="eng-buddy learning engine utilities")
+    parser.add_argument("--register-learning-category", dest="register_learning_category", default="")
+    parser.add_argument("--description", default="")
+    parser.add_argument("--path", default="")
+    parser.add_argument("--heading", default="")
+    parser.add_argument(
+        "--capture-post-tool",
+        action="store_true",
+        help="Read PostToolUse payload JSON from stdin and capture learning event",
+    )
+
+    args = parser.parse_args()
+
+    if args.register_learning_category:
+        result = register_learning_category(
+            name=args.register_learning_category,
+            description=args.description,
+            path=args.path,
+            heading=args.heading,
+        )
+        print(json.dumps(result))
+        return 0
+
+    if args.capture_post_tool:
+        payload_text = sys.stdin.read().strip()
+        if not payload_text:
+            print(json.dumps({"recorded": False, "reason": "empty_payload"}))
+            return 0
+        try:
+            payload = json.loads(payload_text)
+        except json.JSONDecodeError:
+            print(json.dumps({"recorded": False, "reason": "invalid_json"}))
+            return 0
+
+        print(json.dumps(capture_post_tool_learning(payload)))
+        return 0
+
+    parser.print_help()
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(_cli())

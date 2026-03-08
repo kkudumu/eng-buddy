@@ -2,11 +2,26 @@
 
 ## Overview
 
-The eng-buddy skill includes a six-hook automation system that handles automatic progress logging, context preservation across compaction, session snapshots, and heartbeat monitoring. All hooks are session-gated — they only activate during active `/eng-buddy` sessions and deactivate automatically when the conversation ends.
+The eng-buddy skill includes a seven-hook automation system that handles automatic progress logging, context preservation across compaction, session snapshots, heartbeat monitoring, and learning-engine completion capture. All hooks are session-gated — they only activate during active `/eng-buddy` sessions and deactivate automatically when the conversation ends.
 
 ## Installation Steps
 
-### 1. Copy Hook Scripts to Your Hooks Directory
+### 1. Run the Hook Installer (Recommended)
+
+Use the one-shot installer to sync hooks to all relevant parent/child locations and patch settings:
+
+```bash
+bash ~/.claude/skills/eng-buddy/bin/install-hooks.sh
+```
+
+What this does automatically:
+- Installs hooks to `~/.claude/hooks` (runtime parent hooks)
+- Syncs hooks to `~/.claude/skills/eng-buddy/hooks` (skill child copy)
+- Syncs hooks to `~/.claude/eng-buddy/hooks` (runtime child copy)
+- Patches `~/.claude/settings.json` for `UserPromptSubmit`, `PostToolUse`, and `SessionEnd`
+- Ensures learning-engine runtime files exist (`~/.claude/eng-buddy/bin/brain.py`)
+
+### 1b. Manual Copy (Optional, if you don't use installer)
 
 **Find your hooks directory:**
 - **Claude Code default**: `~/.claude/hooks/`
@@ -59,6 +74,16 @@ chmod +x $CLAUDE_HOME/hooks/eng-buddy-*.sh
         ]
       }
     ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/YOUR_USERNAME/.claude/hooks/eng-buddy-learning-capture.sh"
+          }
+        ]
+      }
+    ],
     "SessionEnd": [
       {
         "hooks": [
@@ -88,7 +113,8 @@ Open `~/.claude/skills/eng-buddy/SKILL.md` and find **STEP 0** in the "Workspace
 **Update the path to match your hooks directory:**
 
 ```
-STEP 0: Activate auto-logging hook (MUST DO FIRST)
+STEP 0: Install/sync hooks, then activate auto-logging (MUST DO FIRST)
+- Use Bash: bash ~/.claude/skills/eng-buddy/bin/install-hooks.sh
 - Use Bash: /Users/YOUR_USERNAME/.claude/hooks/eng-buddy-session-manager.sh start
 ```
 
@@ -97,8 +123,16 @@ STEP 0: Activate auto-logging hook (MUST DO FIRST)
 ### 4. Verify Installation
 
 ```bash
+# Run installer again safely (idempotent):
+bash ~/.claude/skills/eng-buddy/bin/install-hooks.sh
+
 # Check hooks are in place and executable:
 ls -la ~/.claude/hooks/eng-buddy-*.sh
+ls -la ~/.claude/skills/eng-buddy/hooks/eng-buddy-*.sh
+ls -la ~/.claude/eng-buddy/hooks/eng-buddy-*.sh
+
+# Optional: run the repo sync check (from ~/.claude repo root):
+make eng-buddy-check-hooks
 
 # Check session manager works:
 ~/.claude/hooks/eng-buddy-session-manager.sh status
@@ -123,6 +157,20 @@ Three hooks fire on every `UserPromptSubmit`:
 2. **post-compaction**: Checks if context was just compacted (conversation was summarized). If detected, injects a reminder for Claude to reload your workspace context from the daily log.
 
 3. **auto-log**: Detects progress update phrases ("I completed...", "I sent...", "I fixed...", etc.) and reminds Claude to log the action. Also runs the heartbeat check (~30-minute intervals) to surface items from `HEARTBEAT.md`.
+
+### During Tool Execution (after every tool call)
+
+`eng-buddy-learning-capture.sh` fires on `PostToolUse`:
+
+1. Captures completion events for `Write/Edit/Bash/task-style MCP` tools into `inbox.db` (`learning_events` table).
+2. Routes known categories (e.g. `writing-update`, `task-execution`) into learning files.
+3. If a completion cannot be mapped, Claude asks whether to add a new category.
+4. If you approve, run:
+   ```bash
+   python3 ~/.claude/eng-buddy/bin/brain.py \
+     --register-learning-category \"your-category\" \
+     --description \"What this captures\"
+   ```
 
 ### When Session Ends
 
@@ -158,6 +206,14 @@ Three hooks fire on every `UserPromptSubmit`:
 - **Only runs when**: `.session-active` marker file exists
 - **Detection patterns**: "I completed", "I sent", "I fixed", "just merged", etc.
 - **Heartbeat**: Also surfaces items from `HEARTBEAT.md` on ~30-minute intervals
+
+### eng-buddy-learning-capture.sh
+- **Trigger**: PostToolUse (after each tool call)
+- **Purpose**: Capture write/task completion events into learning engine DB (`learning_events`, `learning_categories`)
+- **Session scope**: Active `/eng-buddy` sessions and dashboard-opened `eng-buddy task` sessions
+- **Category behavior**:
+  - Known mapping → auto-route to learning files
+  - Unknown mapping → asks user if a new category should be registered
 
 ### eng-buddy-session-snapshot.sh
 - **Trigger**: SessionEnd (when conversation ends)
@@ -249,7 +305,7 @@ To remove the auto-logging system:
    ```
 
 2. **Remove settings.json configuration:**
-   - Delete the `UserPromptSubmit` and `SessionEnd` hook entries
+   - Delete the `UserPromptSubmit`, `PostToolUse`, and `SessionEnd` hook entries
 
 3. **Remove marker file:**
    ```bash

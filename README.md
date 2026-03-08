@@ -1,43 +1,53 @@
 # eng-buddy
 
-> Your on-call engineering assistant with a local dashboard, background pollers, and comprehensive self-tracking.
+> Your on-call engineering copilot with an approval-first action loop, a local dashboard, and continuous learning capture.
 
-A Claude Code skill + local web dashboard that turns your `~/.claude/` directory into an intelligent engineering operations center. Background pollers watch Gmail, Slack, Jira, and Freshservice — surfacing actionable cards you can approve, hold, refine, or open as full Claude sessions.
+A Claude Code skill + local web dashboard that turns `~/.claude/eng-buddy` into an engineering operations cockpit. Pollers watch Gmail, Slack, Jira, Calendar, and Freshservice; cards are triaged in a queue; high-impact actions are routed through explicit decision approvals before execution.
 
-## What You Get
+## What You Can Do
 
-- **Dashboard** at `localhost:7777` — neo-brutalist dark-mode queue UI
-- **Background pollers** — Gmail, Slack, Jira, Freshservice feed cards into a local SQLite queue
-- **One-click execution** — approve a card and watch Claude execute it in a streaming terminal
-- **Refine before acting** — chat with Claude about a card before approving
-- **Open Session** — spawn a full interactive Claude session in Terminal.app for complex tasks
-- **Skill integration** — `/eng-buddy` auto-launches the dashboard and loads your full context
-- **Comprehensive tracking** — passive data collection on energy, decisions, context switches, patterns
+- **Run a unified ops dashboard** at `localhost:7777` with live SSE updates and source filters.
+- **Triage by source and intent** across Gmail, Slack, Jira, Freshservice, Calendar, and Tasks.
+- **Use explicit decision gates** (`approved`, `rejected`, `refined`) before execution-heavy actions.
+- **Track action history** with timelines for decisions, executions, and chat context.
+- **Open full task sessions** in your preferred terminal (`Terminal`, `Warp`, `iTerm`, `Alacritty`, `kitty`).
+- **Refine actions conversationally** before execution using per-task/per-card chat histories.
+- **Write task/card updates to Jira** and append structured daily log entries from the dashboard.
+- **Work across dedicated views** for `TASKS`, `DAILY`, `LEARNINGS`, and `KNOWLEDGE`.
+- **Capture learning events automatically** from tool usage into local learning artifacts.
+- **Restart dashboard safely** from the UI and invalidate stale source caches without full refresh churn.
+- **Install/sync hooks automatically** across runtime + skill locations with one command.
 
 ## Quick Start
 
 ```bash
-# 1. Clone the repo (if you haven't already)
-git clone https://github.com/kkudumu/clod.git ~/.claude
+# 1. Clone the skill repo
+git clone https://github.com/kkudumu/eng-buddy.git ~/.claude/skills/eng-buddy
 
-# 2. Start the dashboard
+# 2. Install/sync eng-buddy hooks + learning capture wiring
+bash ~/.claude/skills/eng-buddy/bin/install-hooks.sh
+
+# 3. Optional: verify hook mirrors are synchronized
+bash ~/.claude/skills/eng-buddy/bin/check-hook-sync.sh
+
+# 4. Start the dashboard
 cd ~/.claude/eng-buddy/dashboard
 ./start.sh
 # Opens at http://localhost:7777
 
-# 3. Invoke the skill
+# 5. Invoke the skill
 # In Claude Code:
 /eng-buddy
 ```
 
-The dashboard auto-creates a Python venv and installs dependencies on first run.
+The dashboard launcher auto-creates a Python venv and installs dependencies on first run.
 
 ## Architecture
 
 ```
 ~/.claude/eng-buddy/
 ├── dashboard/              # FastAPI web dashboard
-│   ├── server.py           # API: cards, SSE, WebSocket execution, refine, open-session
+│   ├── server.py           # Queue API, decision workflow, timelines, SSE, WS execution
 │   ├── static/
 │   │   ├── index.html      # HTML skeleton
 │   │   ├── style.css       # Neo-brutalist dark CSS
@@ -47,10 +57,20 @@ The dashboard auto-creates a Python venv and installs dependencies on first run.
 │   │   └── test_server.py
 │   ├── requirements.txt    # fastapi, uvicorn, ptyprocess
 │   └── start.sh            # One-command launcher
-├── bin/                    # Background pollers
+├── bin/                    # Pollers + runtime helpers
 │   ├── gmail-poller.py     # Watches email threads/senders → cards
 │   ├── slack-poller.py     # DMs, @mentions, task signals → cards
-│   └── jira-poller.py      # Assigned issues → cards
+│   ├── jira-poller.py      # Assigned issues/sprint signals → cards
+│   ├── calendar-poller.py  # Upcoming meetings → cards
+│   ├── install-hooks.sh    # Installs/syncs hook wiring + patches settings.json
+│   └── check-hook-sync.sh  # Verifies hook mirrors are byte-identical
+├── hooks/                  # Session-gated lifecycle hooks
+│   ├── eng-buddy-auto-log.sh
+│   ├── eng-buddy-learning-capture.sh
+│   ├── eng-buddy-pre-compaction.sh
+│   ├── eng-buddy-post-compaction.sh
+│   ├── eng-buddy-session-snapshot.sh
+│   └── eng-buddy-session-end.sh
 ├── inbox.db                # SQLite card queue (auto-created)
 └── [personal data dirs]    # daily/, weekly/, knowledge/, etc. (gitignored)
 ```
@@ -200,20 +220,35 @@ conn.commit()
 conn.close()
 ```
 
-## Dashboard API
+## Dashboard API (Key Endpoints)
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
 | `/` | GET | Dashboard UI |
 | `/api/health` | GET | Health check |
 | `/api/cards?status=pending&source=gmail` | GET | List cards with filters + counts |
-| `/api/cards/{id}/hold` | POST | Hold a card for later |
-| `/api/cards/{id}/status` | POST | Update card status |
-| `/api/events` | GET | SSE stream for new cards |
+| `/api/inbox-view?source=gmail` | GET | Split view for needs-action vs no-action |
+| `/api/tasks` | GET | Parse `tasks/active-tasks.md` into task cards |
+| `/api/cards/{id}/decision` | POST | Record decision for a card action |
+| `/api/tasks/{task_number}/decision` | POST | Record decision for a task action |
+| `/api/cards/{id}/timeline` | GET | Decision/execution/chat timeline for a card |
+| `/api/tasks/{task_number}/timeline` | GET | Decision/execution/chat timeline for a task |
+| `/api/cards/{id}/refine` | POST | Refine a card action conversationally |
+| `/api/tasks/{task_number}/refine` | POST | Refine a task action conversationally |
+| `/api/cards/{id}/open-session` | POST | Spawn interactive Claude in your terminal |
+| `/api/tasks/{task_number}/open-session` | POST | Spawn task-focused Claude session |
+| `/api/cards/{id}/write-jira` | POST | Write/update Jira from card context |
+| `/api/tasks/{task_number}/write-jira` | POST | Write/update Jira from task context |
+| `/api/cards/{id}/daily-log` | POST | Append structured daily log entry |
+| `/api/tasks/{task_number}/daily-log` | POST | Append task daily log entry |
+| `/api/events` | GET | SSE stream for new cards + cache invalidation |
+| `/api/cache-invalidate` | POST | Mark source cache stale from pollers |
+| `/api/restart` | POST | Restart dashboard server from UI |
 | `/ws/execute/{id}` | WebSocket | Stream Claude execution output |
-| `/api/cards/{id}/refine` | POST | Chat about a card before execution |
-| `/api/cards/{id}/open-session` | POST | Spawn interactive Claude in Terminal.app |
 | `/api/notify` | POST | Fire macOS notification |
+| `/api/daily/logs` | GET | Enumerate daily logs for dashboard |
+| `/api/learnings/summary` | GET | Learning loop summary by date/range |
+| `/api/knowledge/index` | GET | Indexed knowledge browser |
 
 ## Personalizing the Workspace
 

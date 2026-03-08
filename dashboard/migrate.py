@@ -56,6 +56,66 @@ MIGRATIONS = [
         status TEXT DEFAULT 'tracking',
         filter_id TEXT
     )""",
+    # Chat sessions across cards/tasks/open-session transcripts
+    """CREATE TABLE IF NOT EXISTS chat_sessions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        scope TEXT NOT NULL,
+        source TEXT NOT NULL,
+        source_ref TEXT NOT NULL,
+        title TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        last_ingested_message_id INTEGER DEFAULT 0,
+        UNIQUE(scope, source_ref)
+    )""",
+    """CREATE TABLE IF NOT EXISTS chat_messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id INTEGER NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+        role TEXT NOT NULL,
+        content TEXT NOT NULL,
+        metadata TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_chat_sessions_source ON chat_sessions(source, scope)",
+    "CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id, id)",
+    # Explicit action approval workflow + execution audit
+    """CREATE TABLE IF NOT EXISTS action_steps (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        entity_type TEXT NOT NULL,
+        entity_id TEXT NOT NULL,
+        action_name TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'proposed',
+        payload TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )""",
+    """CREATE TABLE IF NOT EXISTS decision_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        entity_type TEXT NOT NULL,
+        entity_id TEXT NOT NULL,
+        action_step_id INTEGER REFERENCES action_steps(id) ON DELETE SET NULL,
+        decision TEXT NOT NULL,
+        rationale TEXT,
+        actor TEXT NOT NULL DEFAULT 'user',
+        metadata TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )""",
+    """CREATE TABLE IF NOT EXISTS execution_attempts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        entity_type TEXT NOT NULL,
+        entity_id TEXT NOT NULL,
+        action_step_id INTEGER REFERENCES action_steps(id) ON DELETE SET NULL,
+        action_name TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'running',
+        output TEXT,
+        error TEXT,
+        metadata TEXT,
+        started_at TEXT NOT NULL DEFAULT (datetime('now')),
+        finished_at TEXT
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_action_steps_entity ON action_steps(entity_type, entity_id, action_name, updated_at)",
+    "CREATE INDEX IF NOT EXISTS idx_decision_events_entity ON decision_events(entity_type, entity_id, decision, created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_execution_attempts_entity ON execution_attempts(entity_type, entity_id, action_name, started_at)",
     # Decision log
     """CREATE TABLE IF NOT EXISTS decisions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -90,6 +150,32 @@ MIGRATIONS = [
         INSERT INTO decisions_fts(rowid, summary, context_notes, draft_response, execution_result, tags)
         VALUES (new.id, new.summary, new.context_notes, new.draft_response, new.execution_result, new.tags);
     END""",
+    # Learning engine categories + captured hook events
+    """CREATE TABLE IF NOT EXISTS learning_categories (
+        name TEXT PRIMARY KEY,
+        description TEXT,
+        source TEXT NOT NULL DEFAULT 'system',
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )""",
+    """CREATE TABLE IF NOT EXISTS learning_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT,
+        hook_event TEXT,
+        source TEXT,
+        scope TEXT,
+        tool_name TEXT,
+        category TEXT,
+        title TEXT,
+        note TEXT,
+        status TEXT NOT NULL DEFAULT 'captured',
+        requires_category_expansion INTEGER NOT NULL DEFAULT 0,
+        proposed_category TEXT,
+        metadata TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_learning_events_session ON learning_events(session_id, created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_learning_events_category ON learning_events(category, created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_learning_events_pending ON learning_events(requires_category_expansion, created_at)",
     # Refinement history on cards
     "ALTER TABLE cards ADD COLUMN refinement_history TEXT",
     # Deduplicate all cards: keep newest per (source, summary), delete older copies

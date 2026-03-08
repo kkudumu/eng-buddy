@@ -1,14 +1,39 @@
 #!/bin/bash
-# Hook: Auto-log progress to eng-buddy daily log
-# Triggers: When user reports completed actions while eng-buddy is active
+# Hook: Auto-log progress + heartbeat for eng-buddy
+# Triggers: Every user message while eng-buddy is active
+#
+# 1. Auto-log: reminds Claude to log progress when user reports completing something
+# 2. Task inbox: surfaces unreviewed Slack/email tasks every 10 min
+# 3. Heartbeat: every 30 min, scans task state for urgent items to surface
+#
+# Heartbeat inspired by OpenClaw's HEARTBEAT.md pattern (heartbeat.ts):
+# Periodically checks ~/.claude/eng-buddy/HEARTBEAT.md and task state,
+# prompting Claude to surface anything time-sensitive without the user asking.
+#
+# FILES:
+#   ~/.claude/eng-buddy/.session-active       - session gate
+#   ~/.claude/eng-buddy/.last-heartbeat       - timestamp of last heartbeat
+#   ~/.claude/eng-buddy/HEARTBEAT.md          - user-maintained alert/task config
 
 # Check if eng-buddy session is active
 if [ ! -f ~/.claude/eng-buddy/.session-active ]; then
     exit 0  # Not in eng-buddy session, skip
 fi
 
-# Get the user's message from stdin or first argument
-USER_MESSAGE="${1:-$(cat)}"
+# Read payload from stdin (JSON) — extract prompt for action pattern matching
+STDIN_DATA=$(cat)
+USER_MESSAGE=$(echo "$STDIN_DATA" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    print(d.get('prompt', ''))
+except:
+    print('')
+" 2>/dev/null)
+# Fallback: treat stdin as raw message if JSON parse failed
+if [ -z "$USER_MESSAGE" ]; then
+    USER_MESSAGE="$STDIN_DATA"
+fi
 
 # Action indicators (what users say when they've done something)
 ACTION_PATTERNS=(
@@ -80,4 +105,43 @@ if [ -f "$TASK_INBOX" ]; then
             echo ""
         fi
     fi
+fi
+
+# --- Heartbeat: periodic task/urgency check ---
+# Fires every 30 minutes. Prompts Claude to scan for time-sensitive items
+# without the user having to ask. Inspired by OpenClaw's HEARTBEAT.md pattern.
+HEARTBEAT_INTERVAL=1800  # 30 minutes in seconds
+LAST_HEARTBEAT_FILE="$HOME/.claude/eng-buddy/.last-heartbeat"
+HEARTBEAT_MD="$HOME/.claude/eng-buddy/HEARTBEAT.md"
+
+SHOULD_HEARTBEAT=false
+if [ -f "$LAST_HEARTBEAT_FILE" ]; then
+    LAST_BEAT=$(cat "$LAST_HEARTBEAT_FILE" 2>/dev/null || echo 0)
+    NOW=$(date +%s)
+    ELAPSED=$(( NOW - LAST_BEAT ))
+    if [ "$ELAPSED" -ge "$HEARTBEAT_INTERVAL" ]; then
+        SHOULD_HEARTBEAT=true
+    fi
+else
+    # First message of session — no heartbeat on first message, just record time
+    echo "$(date +%s)" > "$LAST_HEARTBEAT_FILE"
+fi
+
+if [ "$SHOULD_HEARTBEAT" = true ]; then
+    echo "$(date +%s)" > "$LAST_HEARTBEAT_FILE"
+    echo ""
+    echo "[HEARTBEAT — $(date '+%H:%M') check-in]: 30 minutes have passed. Briefly scan for anything time-sensitive:"
+    echo "- Read ~/.claude/eng-buddy/tasks/active-tasks.md — any deadlines or blockers that need attention?"
+    echo "- Read ~/.claude/eng-buddy/dependencies/active-blockers.md — any aging blockers to escalate?"
+    # Surface HEARTBEAT.md if it exists and has content
+    if [ -f "$HEARTBEAT_MD" ]; then
+        HB_CONTENT=$(cat "$HEARTBEAT_MD" 2>/dev/null)
+        # Check for non-trivial content (not just headers/whitespace)
+        HB_ACTIONABLE=$(echo "$HB_CONTENT" | grep -v "^#" | grep -v "^[[:space:]]*$" | head -3)
+        if [ -n "$HB_ACTIONABLE" ]; then
+            echo "- HEARTBEAT.md has tasks configured — read it and follow any instructions."
+        fi
+    fi
+    echo "If nothing urgent, proceed normally. If something needs attention, surface it briefly."
+    echo ""
 fi

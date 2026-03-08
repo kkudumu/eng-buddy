@@ -14,8 +14,11 @@ You are Engineering Buddy, a specialized assistant for a senior IT systems engin
 **EXECUTE THIS FIRST ON EVERY INVOCATION - BEFORE ANY OTHER ACTION:**
 
 ```
-STEP 0: Activate auto-logging hook (MUST DO FIRST)
-- Use Bash: ~/.claude/hooks/eng-buddy-session-manager.sh start
+STEP 0: Install/sync hooks, then activate auto-logging (MUST DO FIRST)
+- Use Bash: bash ~/.claude/skills/eng-buddy/bin/install-hooks.sh
+- This syncs hooks to parent + child locations (`~/.claude/hooks`, `~/.claude/skills/eng-buddy/hooks`, `~/.claude/eng-buddy/hooks`),
+  patches `~/.claude/settings.json`, and ensures learning-engine runtime files are present
+- Then use Bash: ~/.claude/hooks/eng-buddy-session-manager.sh start
 - This enables automatic progress logging for this session
 - Hook will detect when you report completed actions and prompt logging
 
@@ -1534,12 +1537,13 @@ You won't get: automatic progress logging prompts, Slack message ingestion, task
 
 ### Tier 1 — Base + Hooks
 
-Six hook scripts ship with eng-buddy:
+Seven hook scripts ship with eng-buddy:
 
 | Script | Trigger | What it does |
 |--------|---------|--------------|
 | `eng-buddy-session-manager.sh` | Called by SKILL.md STEP 0 | Activates/deactivates the session marker. `start` creates `~/.claude/eng-buddy/.session-active`, `stop` removes it. Gates all other hooks. |
 | `eng-buddy-auto-log.sh` | `UserPromptSubmit` (every message) | Detects when you report completing something ("I finished…", "just sent…", "done") and reminds Claude to log it to today's daily file. Also checks `task-inbox.md` and surfaces any unreviewed Slack tasks. **Heartbeat**: every 30 minutes, prompts Claude to scan `active-tasks.md` and `active-blockers.md` for time-sensitive items — and surfaces any alerts configured in `HEARTBEAT.md`. Only fires during active eng-buddy sessions. |
+| `eng-buddy-learning-capture.sh` | `PostToolUse` (after each tool call) | Captures write/task completion events into the learning engine DB (`learning_events`). Routes known categories into long-lived knowledge files. If a completion cannot be mapped to an existing category, it prompts Claude to ask whether to register a new learning category via `brain.py --register-learning-category`. Works for active `/eng-buddy` sessions and dashboard-opened `eng-buddy task` sessions. |
 | `eng-buddy-pre-compaction.sh` | `UserPromptSubmit` (every message) | **Pre-compaction memory flush.** Reads the session JSONL to track real token usage (`input + cache_read + cache_write`). When context hits 150K/200K tokens (75%), injects a silent flush-first prefix instructing Claude to write daily log + task state BEFORE responding. Includes today's date so Claude uses the correct daily log filename. Cooldown: re-fires every 15K additional tokens. Only fires during active eng-buddy sessions. |
 | `eng-buddy-post-compaction.sh` | `UserPromptSubmit` (every message) | **Post-compaction context restoration.** Detects when Claude Code has compacted the session (same session ID, fewer JSONL lines). After compaction, Claude loses in-session state — this hook injects a re-initialization prompt telling Claude to reload its daily log, task state, and blockers before responding. Only fires during active eng-buddy sessions. |
 | `eng-buddy-session-snapshot.sh` | `SessionEnd` (conversation ends) | **Session snapshot.** Captures the last 15 meaningful user/assistant exchanges as a markdown file in `sessions/`. Fills the gap where sessions that never hit the compaction threshold lose all conversational context. Filters out tool calls, system messages, and slash commands. Truncates messages > 2000 chars. Derives a topic slug from the last user message for the filename. Requires ≥ 3 messages to fire (skips trivial sessions). **Must run before `eng-buddy-session-end.sh`** (it checks for `.session-active` which session-end removes). |
@@ -1600,17 +1604,37 @@ If nothing urgent, proceed normally. If something needs attention, surface it br
 
 `~/.claude/eng-buddy/HEARTBEAT.md` is a user-maintained file for persistent alerts. Lines starting with `#` and blank lines are ignored. Add actionable items here that you want surfaced at every 30-minute check-in — delete them when no longer relevant.
 
+**How completion capture + category expansion works:**
+
+`eng-buddy-learning-capture.sh` runs on `PostToolUse`, so it sees completed `Write/Edit/Bash/MCP` actions as they happen. It records each eligible completion in `~/.claude/eng-buddy/inbox.db` (`learning_events`) and maps it to a learning category in `learning_categories`.
+
+- If mapping is known (`writing-update`, `task-execution`, etc.), the learning is recorded and routed immediately.
+- If mapping is unknown, the hook injects a prompt telling Claude to ask the user whether to add a new category.
+- On approval, register it with:
+
+```bash
+python3 ~/.claude/eng-buddy/bin/brain.py \
+  --register-learning-category "your-category" \
+  --description "What this captures"
+```
+
 **Install:**
 
 ```bash
+# Recommended: one-shot installer (idempotent)
+bash ~/.claude/skills/eng-buddy/bin/install-hooks.sh
+
+# If you prefer manual install, follow below:
+
 # 1. Find your CLAUDE_HOME
 echo $CLAUDE_HOME  # or default: ~/.claude
 
-# 2. Copy all six hook scripts and create required directories
+# 2. Copy all seven hook scripts and create required directories
 HOOKS_DIR="${CLAUDE_HOME:-$HOME/.claude}/hooks"
 mkdir -p "$HOOKS_DIR"
 mkdir -p ~/.claude/eng-buddy/sessions
 cp ~/.claude/skills/eng-buddy/hooks/eng-buddy-auto-log.sh "$HOOKS_DIR/"
+cp ~/.claude/skills/eng-buddy/hooks/eng-buddy-learning-capture.sh "$HOOKS_DIR/"
 cp ~/.claude/skills/eng-buddy/hooks/eng-buddy-pre-compaction.sh "$HOOKS_DIR/"
 cp ~/.claude/skills/eng-buddy/hooks/eng-buddy-post-compaction.sh "$HOOKS_DIR/"
 cp ~/.claude/skills/eng-buddy/hooks/eng-buddy-session-snapshot.sh "$HOOKS_DIR/"
@@ -1618,7 +1642,7 @@ cp ~/.claude/skills/eng-buddy/hooks/eng-buddy-session-end.sh "$HOOKS_DIR/"
 cp ~/.claude/skills/eng-buddy/hooks/eng-buddy-session-manager.sh "$HOOKS_DIR/"
 chmod +x "$HOOKS_DIR"/eng-buddy-*.sh
 
-# 3. Wire UserPromptSubmit and SessionEnd in settings.json
+# 3. Wire UserPromptSubmit, PostToolUse, and SessionEnd in settings.json
 # Location: $CLAUDE_HOME/settings.json or ~/.claude/settings.json
 ```
 
@@ -1641,6 +1665,16 @@ Add to `settings.json` (replace path with your actual `$HOOKS_DIR`):
           {
             "type": "command",
             "command": "/YOUR/HOOKS/DIR/eng-buddy-post-compaction.sh"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/YOUR/HOOKS/DIR/eng-buddy-learning-capture.sh"
           }
         ]
       }
@@ -1671,7 +1705,7 @@ Add to `settings.json` (replace path with your actual `$HOOKS_DIR`):
 #   "Use Bash: ~/.claude-backup.../hooks/eng-buddy-session-manager.sh start"
 # Replace the path with: $HOOKS_DIR/eng-buddy-session-manager.sh start
 
-# 5. Verify all six are in place and executable
+# 5. Verify all seven are in place and executable
 ls -la "$HOOKS_DIR"/eng-buddy-*.sh
 "$HOOKS_DIR"/eng-buddy-session-manager.sh status
 # Expected: ⏸️  eng-buddy auto-logging is INACTIVE
@@ -1854,6 +1888,7 @@ slack-poller.py          gmail-poller.py     ← Tier 2a/2b: passive ingestion
         task-inbox.md           ← Slack task signals + email watch matches
              ↓
   eng-buddy-auto-log.sh         ← Tier 1: auto-log, task inbox, 30-min heartbeat
+  eng-buddy-learning-capture.sh ← Tier 1: PostToolUse capture → learning_events + category expansion prompts
   eng-buddy-pre-compaction.sh   ← Tier 1: reads session JSONL → silent flush at 150K tokens
   eng-buddy-post-compaction.sh  ← Tier 1: detects JSONL line-count drop → restores context
              ↓
