@@ -109,3 +109,6 @@ templates/
 email-watches.md
 task-inbox.md
 action-log.md
+
+# Git worktrees
+.worktrees/
