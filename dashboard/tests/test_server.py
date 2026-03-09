@@ -136,6 +136,8 @@ async def test_close_task_endpoint_updates_all_matching_blocks(tmp_path, monkeyp
     )
     monkeypatch.setattr(server, "TASKS_FILE", tasks_file)
     monkeypatch.setattr(server, "DAILY_DIR", tmp_path / "daily")
+    monkeypatch.setattr(server, "RUNTIME_DIR", tmp_path / ".runtime")
+    monkeypatch.setattr(server, "CLAUDE_SYNC_FILE", tmp_path / ".runtime" / "claude-sync-events.txt")
     monkeypatch.setattr(
         server,
         "_build_task_daily_log_line",
@@ -149,13 +151,23 @@ async def test_close_task_endpoint_updates_all_matching_blocks(tmp_path, monkeyp
         )
         assert decision.status_code == 200
         decision_event_id = decision.json()["decision_event_id"]
-        r = await client.post("/api/tasks/42/close", json={"decision_event_id": decision_event_id})
+        r = await client.post(
+            "/api/tasks/42/close",
+            json={"note": "finished setup", "decision_event_id": decision_event_id},
+        )
 
     assert r.status_code == 200
     assert r.json()["updated_blocks"] == 2
     assert "daily_log_file" in r.json()
     updated = tasks_file.read_text(encoding="utf-8")
     assert updated.count("**Status**: completed") == 2
+    assert "## COMPLETED TASKS" in updated
+    assert updated.count("**Completion Note**: finished setup") == 2
+    assert "## PENDING TASKS\n\n### #42" not in updated
+    assert "## IN PROGRESS TASKS\n\n### #42" not in updated
+    sync_text = server.CLAUDE_SYNC_FILE.read_text(encoding="utf-8")
+    assert "Dashboard closed Task #42" in sync_text
+    assert "finished setup" in sync_text
 
 
 @pytest.mark.asyncio

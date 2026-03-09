@@ -76,6 +76,17 @@ if [ "$SHOULD_LOG" = true ]; then
     echo ""
 fi
 
+# --- Dashboard sync: surface task-state changes made outside the chat ---
+CLAUDE_SYNC_FILE="$HOME/.claude/eng-buddy/.runtime/claude-sync-events.txt"
+if [ -s "$CLAUDE_SYNC_FILE" ]; then
+    echo ""
+    echo "[Dashboard sync] Recent dashboard updates were written to eng-buddy state:"
+    head -20 "$CLAUDE_SYNC_FILE"
+    echo "Please re-read ~/.claude/eng-buddy/tasks/active-tasks.md before responding and treat those updates as authoritative."
+    echo ""
+    : > "$CLAUDE_SYNC_FILE"
+fi
+
 # --- Check for pending Slack task inbox items ---
 TASK_INBOX=~/.claude/eng-buddy/task-inbox.md
 TASK_SHOWN_MARKER=~/.claude/eng-buddy/.task-inbox-last-shown

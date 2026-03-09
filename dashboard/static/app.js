@@ -1398,7 +1398,7 @@ async function openTaskSession(taskNumber, btn) {
 async function closeTask(taskNumber, btn) {
   const confirmed = window.confirm(`Mark Task #${taskNumber} as completed?`);
   if (!confirmed) return;
-  const note = window.prompt('Optional close note (saved in API response only):', '') || '';
+  const note = window.prompt('Optional close note (saved to task state, daily log, and decision history):', '') || '';
   if (btn) {
     btn.disabled = true;
     btn.textContent = 'CLOSING...';

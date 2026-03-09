@@ -28,6 +28,7 @@ PATTERNS_DIR = ENG_BUDDY_DIR / "patterns"
 STAKEHOLDERS_DIR = ENG_BUDDY_DIR / "stakeholders"
 MEMORY_DIR = ENG_BUDDY_DIR / "memory"
 RUNTIME_DIR = ENG_BUDDY_DIR / ".runtime"
+CLAUDE_SYNC_FILE = RUNTIME_DIR / "claude-sync-events.txt"
 LAUNCHER_DIR = RUNTIME_DIR / "launchers"
 TERMINAL_APP = os.environ.get("ENG_BUDDY_TERMINAL", "Terminal")
 JIRA_USER = os.environ.get("ENG_BUDDY_JIRA_USER", "")
@@ -1260,42 +1261,78 @@ def _get_task_by_number(task_number: int):
     return None
 
 
-def _set_task_status(task_number: int, new_status: str):
-    """Update status in every matching task block by task number."""
+def _upsert_task_metadata_line(block: str, label: str, value: str):
+    pattern = rf"^\*\*{re.escape(label)}\*\*:\s*.*$"
+    replacement = f"**{label}**: {value}"
+    if re.search(pattern, block, flags=re.MULTILINE):
+        return re.sub(pattern, replacement, block, count=1, flags=re.MULTILINE)
+
+    lines = block.splitlines()
+    insert_at = len(lines)
+    for idx, line in enumerate(lines[1:], start=1):
+        if line.startswith("**Description**:"):
+            insert_at = idx
+            break
+    lines.insert(insert_at, replacement)
+    return "\n".join(lines)
+
+
+def _set_task_status(task_number: int, new_status: str, completion_note: str = ""):
+    """Update matching task blocks and move completed ones into the completed section."""
     if not TASKS_FILE.exists():
         return 0
 
     content = TASKS_FILE.read_text(encoding="utf-8")
     pattern = re.compile(
-        rf"(^###\s+#{task_number}\s*-\s*.+?)(?=^###\s+#\d+\s*-|\Z)",
+        rf"(^###\s+#{task_number}\s*-\s*.+?)(?=^###\s+#\d+\s*-|^##\s+|\Z)",
         re.MULTILINE | re.DOTALL,
     )
 
-    updated_count = 0
+    matches = list(pattern.finditer(content))
+    if not matches:
+        return 0
 
-    def replace_status(match):
-        nonlocal updated_count
-        updated_count += 1
-        block = match.group(1)
+    updated_blocks = []
 
+    for match in matches:
+        block = match.group(1).rstrip()
         if re.search(r"^\*\*Status\*\*:\s*.+$", block, flags=re.MULTILINE):
-            return re.sub(
+            block = re.sub(
                 r"^\*\*Status\*\*:\s*.+$",
                 f"**Status**: {new_status}",
                 block,
                 count=1,
                 flags=re.MULTILINE,
             )
+        else:
+            lines = block.splitlines()
+            if lines:
+                block = "\n".join([lines[0], f"**Status**: {new_status}", *lines[1:]])
 
-        lines = block.splitlines()
-        if not lines:
-            return block
-        return "\n".join([lines[0], f"**Status**: {new_status}", *lines[1:]])
+        if completion_note:
+            block = _upsert_task_metadata_line(block, "Completion Note", completion_note)
 
-    updated = pattern.sub(replace_status, content)
-    if updated_count:
-        TASKS_FILE.write_text(updated, encoding="utf-8")
-    return updated_count
+        updated_blocks.append(block)
+
+    updated = pattern.sub("", content).rstrip()
+    completed_heading = "## COMPLETED TASKS"
+    completed_match = re.search(r"^##\s+COMPLETED TASKS\s*$", updated, flags=re.MULTILINE)
+    blocks_text = "\n\n".join(updated_blocks)
+
+    if completed_match:
+        head = updated[:completed_match.end()].rstrip("\n")
+        tail = updated[completed_match.end():].lstrip("\n")
+        pieces = [head, "", blocks_text]
+        if tail.strip():
+            pieces.extend(["", tail.rstrip()])
+        updated = "\n".join(pieces)
+    else:
+        pieces = [updated] if updated else []
+        pieces.extend([completed_heading, "", blocks_text])
+        updated = "\n\n".join(piece for piece in pieces if piece != "")
+
+    TASKS_FILE.write_text(updated.rstrip() + "\n", encoding="utf-8")
+    return len(updated_blocks)
 
 
 def _append_daily_log_completed(entry: str):
@@ -1339,6 +1376,16 @@ def _append_daily_log_completed(entry: str):
 
     daily_file.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
     return daily_file, True
+
+
+def _queue_claude_sync_event(message: str):
+    text = (message or "").strip()
+    if not text:
+        return
+    CLAUDE_SYNC_FILE.parent.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with CLAUDE_SYNC_FILE.open("a", encoding="utf-8") as handle:
+        handle.write(f"- [{timestamp}] {text}\n")
 
 
 def _build_task_daily_log_line(task: dict, close_note: str = ""):
@@ -1638,13 +1685,13 @@ async def close_task(task_number: int, body: dict = Body(default={})):
 
     close_date = date.today().isoformat()
     new_status = f"completed ({close_date})"
-    updated_blocks = _set_task_status(task_number, new_status)
+    note = (body.get("note") or "").strip()
+    updated_blocks = _set_task_status(task_number, new_status, completion_note=note)
     if not updated_blocks:
         _mark_action_step_status(action_step_id, "failed")
         _finish_execution_attempt(attempt_id, "failed", error="task block not found")
         raise HTTPException(404, f"task #{task_number} block not found in active file")
 
-    note = (body.get("note") or "").strip()
     updated_task = _get_task_by_number(task_number) or task
     timestamp = datetime.now().strftime("%H:%M")
     try:
@@ -1657,6 +1704,13 @@ async def close_task(task_number: int, body: dict = Body(default={})):
             f"{updated_task.get('title', '')} — {fallback_detail}"
         )
     daily_file, daily_inserted = _append_daily_log_completed(entry)
+    sync_message = (
+        f"Dashboard closed Task #{task_number} as {new_status}. "
+        f"Re-read ~/.claude/eng-buddy/tasks/active-tasks.md and do not treat it as active."
+    )
+    if note:
+        sync_message += f" Close note: {note}"
+    _queue_claude_sync_event(sync_message)
 
     _record_stat("tasks_closed")
     _mark_action_step_status(
