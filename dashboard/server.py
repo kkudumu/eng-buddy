@@ -34,6 +34,40 @@ JIRA_USER = os.environ.get("ENG_BUDDY_JIRA_USER", "")
 
 # In-memory cache for Jira sprint data
 _jira_cache = {"data": None, "fetched_at": 0}
+POLLER_DEFINITIONS = (
+    {
+        "id": "slack",
+        "label": "Slack",
+        "launch_label": "com.engbuddy.slackpoller",
+        "interval_seconds": 300,
+        "state_file": "slack-poller-state.json",
+        "log_file": "slack-poller.log",
+    },
+    {
+        "id": "gmail",
+        "label": "Gmail",
+        "launch_label": "com.engbuddy.gmailpoller",
+        "interval_seconds": 600,
+        "state_file": "gmail-poller-state.json",
+        "log_file": "gmail-poller.log",
+    },
+    {
+        "id": "calendar",
+        "label": "Calendar",
+        "launch_label": "com.engbuddy.calendarpoller",
+        "interval_seconds": 1800,
+        "state_file": "calendar-poller-state.json",
+        "log_file": "calendar-poller.log",
+    },
+    {
+        "id": "jira",
+        "label": "Jira",
+        "launch_label": "com.engbuddy.jirapoller",
+        "interval_seconds": 300,
+        "state_file": "jira-ingestor-state.json",
+        "log_file": "jira-poller.log",
+    },
+)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -115,6 +149,112 @@ def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def _eng_buddy_path(*parts: str) -> Path:
+    return ENG_BUDDY_DIR.joinpath(*parts)
+
+
+def _utc_iso(dt: datetime | None) -> str | None:
+    if not dt:
+        return None
+    return dt.astimezone(timezone.utc).isoformat()
+
+
+def _local_timezone():
+    return datetime.now().astimezone().tzinfo or timezone.utc
+
+
+def _read_json_file(path: Path):
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def _parse_poller_state_timestamp(poller_id: str, state: dict | None) -> datetime | None:
+    if not isinstance(state, dict):
+        return None
+
+    try:
+        if poller_id == "slack":
+            raw = state.get("last_check")
+            if raw:
+                return datetime.fromtimestamp(float(raw), tz=timezone.utc)
+
+        if poller_id == "gmail":
+            raw = int(state.get("last_check_ts") or 0)
+            if raw > 0:
+                return datetime.fromtimestamp(raw, tz=timezone.utc)
+
+        if poller_id == "calendar":
+            raw = (state.get("last_fetch") or "").strip()
+            if raw:
+                parsed = datetime.strptime(raw, "%Y-%m-%d-%H-%M")
+                return parsed.replace(tzinfo=_local_timezone()).astimezone(timezone.utc)
+
+        if poller_id == "jira":
+            raw = (state.get("last_checked") or "").strip()
+            if raw:
+                parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=_local_timezone())
+                return parsed.astimezone(timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+    return None
+
+
+def _file_mtime(path: Path) -> datetime | None:
+    try:
+        if path.exists():
+            return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+    except OSError:
+        return None
+    return None
+
+
+def _resolve_poller_last_run(poller: dict) -> datetime | None:
+    state_path = _eng_buddy_path(poller["state_file"])
+    log_path = _eng_buddy_path(poller["log_file"])
+    state = _read_json_file(state_path)
+    candidates = [
+        _parse_poller_state_timestamp(poller["id"], state),
+        _file_mtime(state_path),
+        _file_mtime(log_path),
+    ]
+    valid = [candidate for candidate in candidates if candidate]
+    return max(valid) if valid else None
+
+
+def _build_poller_status(poller: dict, now: datetime) -> dict:
+    last_run_at = _resolve_poller_last_run(poller)
+    interval_seconds = int(poller["interval_seconds"])
+    next_run_at = None
+    seconds_until_next = None
+    health = "unknown"
+
+    if last_run_at:
+        next_run_at = last_run_at + timedelta(seconds=interval_seconds)
+        if next_run_at <= now:
+            missed_intervals = int((now - next_run_at).total_seconds() // interval_seconds) + 1
+            next_run_at += timedelta(seconds=missed_intervals * interval_seconds)
+        seconds_until_next = max(0, int((next_run_at - now).total_seconds()))
+        health = "running" if (now - last_run_at).total_seconds() <= interval_seconds * 2 else "stale"
+
+    return {
+        "id": poller["id"],
+        "label": poller["label"],
+        "launch_label": poller["launch_label"],
+        "interval_seconds": interval_seconds,
+        "last_run_at": _utc_iso(last_run_at),
+        "next_run_at": _utc_iso(next_run_at),
+        "seconds_until_next": seconds_until_next,
+        "health": health,
+    }
 
 
 def _normalize_action_name(action: str) -> str:
@@ -722,6 +862,15 @@ async def root():
 @app.get("/api/health")
 async def health():
     return {"status": "ok"}
+
+
+@app.get("/api/pollers/status")
+async def get_poller_status():
+    now = datetime.now(timezone.utc)
+    return {
+        "pollers": [_build_poller_status(poller, now) for poller in POLLER_DEFINITIONS],
+        "generated_at": now.isoformat(),
+    }
 
 
 @app.get("/api/daily/logs")

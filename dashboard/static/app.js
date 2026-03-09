@@ -16,6 +16,12 @@ const knowledgeState = {
   query: '',
   selectedPath: '',
 };
+const pollerState = {
+  pollers: [],
+  refreshInFlight: false,
+  countdownTimerId: null,
+  refreshTimerId: null,
+};
 
 // -- Helpers ------------------------------------------------------------------
 
@@ -81,6 +87,85 @@ function invalidateTabCache() {
 function setCounts(counts = {}) {
   document.getElementById('count-pending').textContent = `${counts.pending || 0} pending`;
   document.getElementById('count-held').textContent = `${counts.held || 0} held`;
+}
+
+function formatCountdown(totalSeconds) {
+  const safeSeconds = Math.max(0, Math.ceil(Number(totalSeconds) || 0));
+  const hours = Math.floor(safeSeconds / 3600);
+  const minutes = Math.floor((safeSeconds % 3600) / 60);
+  const seconds = safeSeconds % 60;
+
+  if (hours > 0) {
+    return `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+  }
+
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+}
+
+function getPollerCountdownSeconds(poller) {
+  if (!poller || !poller.next_run_at) return null;
+
+  const intervalMs = Math.max(1000, Number(poller.interval_seconds || 0) * 1000);
+  let diffMs = new Date(poller.next_run_at).getTime() - Date.now();
+  if (!Number.isFinite(diffMs)) return null;
+
+  if (diffMs < 0 && intervalMs > 0) {
+    const catchUpCycles = Math.floor(Math.abs(diffMs) / intervalMs) + 1;
+    diffMs += catchUpCycles * intervalMs;
+  }
+
+  return Math.max(0, Math.ceil(diffMs / 1000));
+}
+
+function renderPollerTimers() {
+  const container = document.getElementById('poller-timers');
+  if (!container) return;
+
+  if (!pollerState.pollers.length) {
+    container.innerHTML = '';
+    return;
+  }
+
+  container.innerHTML = pollerState.pollers.map((poller) => {
+    const countdownSeconds = getPollerCountdownSeconds(poller);
+    const countdownLabel = countdownSeconds === null ? '--:--' : formatCountdown(countdownSeconds);
+    const lastSeen = poller.last_run_at ? timeAgo(poller.last_run_at) : 'never';
+    const health = poller.health || 'unknown';
+    const title = `Last run ${lastSeen}. Next fire in ${countdownLabel}.`;
+    return `
+      <span class="poller-badge ${health}" title="${escHtml(title)}">
+        <span class="poller-name">${escHtml((poller.label || poller.id || 'poller').toUpperCase())}</span>
+        <span class="poller-dot">•</span>
+        <span class="poller-countdown">${escHtml(countdownLabel)}</span>
+      </span>
+    `;
+  }).join('');
+}
+
+async function refreshPollerTimers() {
+  if (pollerState.refreshInFlight) return;
+  pollerState.refreshInFlight = true;
+
+  try {
+    const r = await fetch('/api/pollers/status');
+    if (!r.ok) throw new Error('Failed to load poller status');
+    const data = await r.json();
+    pollerState.pollers = Array.isArray(data.pollers) ? data.pollers : [];
+    renderPollerTimers();
+  } catch {
+    // Leave the last-rendered timers in place if the status fetch fails.
+  } finally {
+    pollerState.refreshInFlight = false;
+  }
+}
+
+function startPollerTimers() {
+  if (!pollerState.countdownTimerId) {
+    pollerState.countdownTimerId = setInterval(renderPollerTimers, 1000);
+  }
+  if (!pollerState.refreshTimerId) {
+    pollerState.refreshTimerId = setInterval(refreshPollerTimers, 30000);
+  }
 }
 
 async function requestDecision(entityType, entityId, action, decision = 'approved', rationale = '') {
@@ -1537,9 +1622,14 @@ document.getElementById('terminal-select').addEventListener('change', async (e) 
 // -- Init ---------------------------------------------------------------------
 
 async function init() {
-  loadQueue();
+  await Promise.all([
+    loadQueue(),
+    loadTerminalSetting(),
+    refreshPollerTimers(),
+  ]);
+  startPollerTimers();
+  updateCounts();
   connectSSE();
-  loadTerminalSetting();
 
   // Show briefing on first load of the day
   const today = new Date().toISOString().slice(0, 10);

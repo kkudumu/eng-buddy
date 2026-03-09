@@ -1,7 +1,9 @@
+import json
 import pytest
 from pathlib import Path
 import sqlite3
 import subprocess
+from datetime import datetime, timedelta, timezone
 from httpx import AsyncClient, ASGITransport
 import server
 from server import app
@@ -12,6 +14,43 @@ async def test_health():
         r = await client.get("/api/health")
     assert r.status_code == 200
     assert r.json()["status"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_get_poller_status_returns_poller_timing(tmp_path, monkeypatch):
+    now = datetime.now(timezone.utc)
+    monkeypatch.setattr(server, "ENG_BUDDY_DIR", tmp_path)
+
+    (tmp_path / "slack-poller-state.json").write_text(
+        json.dumps({"last_check": str(now.timestamp() - 120)}),
+        encoding="utf-8",
+    )
+    (tmp_path / "gmail-poller-state.json").write_text(
+        json.dumps({"last_check_ts": int(now.timestamp() - 45)}),
+        encoding="utf-8",
+    )
+    (tmp_path / "calendar-poller-state.json").write_text(
+        json.dumps({"last_fetch": now.astimezone().strftime("%Y-%m-%d-%H-%M")}),
+        encoding="utf-8",
+    )
+    (tmp_path / "jira-ingestor-state.json").write_text(
+        json.dumps({"last_checked": (now - timedelta(seconds=30)).isoformat()}),
+        encoding="utf-8",
+    )
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r = await client.get("/api/pollers/status")
+
+    assert r.status_code == 200
+    payload = r.json()
+    assert "generated_at" in payload
+    assert len(payload["pollers"]) == 4
+
+    slack = next(item for item in payload["pollers"] if item["id"] == "slack")
+    assert slack["interval_seconds"] == 300
+    assert slack["last_run_at"] is not None
+    assert slack["next_run_at"] is not None
+    assert slack["health"] in {"running", "stale", "unknown"}
 
 @pytest.mark.asyncio
 async def test_get_cards_returns_list():

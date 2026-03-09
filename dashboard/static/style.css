@@ -33,6 +33,8 @@ body {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
   padding: 16px 24px;
   border-bottom: 2px solid var(--border);
   position: sticky;
@@ -47,7 +49,14 @@ body {
   letter-spacing: 4px;
 }
 
-#header-counts { display: flex; gap: 16px; }
+#header-counts {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+  flex: 1;
+  justify-content: center;
+}
 
 #header-settings { display: flex; align-items: center; gap: 8px; }
 .terminal-label { font-size: 10px; font-weight: 700; letter-spacing: 2px; color: var(--muted); }
@@ -72,6 +81,61 @@ body {
 }
 .count-badge.held { border-color: var(--needs-response); color: var(--needs-response); }
 .count-badge.running { border-color: var(--fresh); color: var(--fresh); animation: pulse 1.5s infinite; }
+
+#poller-timers {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.poller-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 29px;
+  padding: 4px 10px;
+  border: 1px solid #2b2b2b;
+  background: #151515;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+}
+
+.poller-badge.running {
+  border-color: rgba(0, 255, 136, 0.55);
+  color: var(--fresh);
+}
+
+.poller-badge.stale {
+  border-color: rgba(245, 245, 0, 0.7);
+  color: var(--needs-response);
+}
+
+.poller-badge.unknown {
+  border-color: #444;
+  color: var(--muted);
+}
+
+.poller-name {
+  color: var(--text);
+}
+
+.poller-badge.running .poller-name,
+.poller-badge.stale .poller-name {
+  color: inherit;
+}
+
+.poller-dot {
+  color: #3a3a3a;
+}
+
+.poller-countdown {
+  min-width: 52px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
 
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
 
@@ -641,4 +705,15 @@ body {
   color: var(--text);
   font-style: italic;
   border-top: 1px solid #222;
+}
+
+@media (max-width: 1080px) {
+  #header {
+    justify-content: flex-start;
+  }
+
+  #header-counts {
+    width: 100%;
+    justify-content: flex-start;
+  }
 }
