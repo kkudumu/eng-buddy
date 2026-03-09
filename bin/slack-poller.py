@@ -274,7 +274,7 @@ def _classify_participation_item(text, responded):
     if responded:
         return "no-action", "responded", None
     if _looks_actionable(text):
-        return "needs-action", "needs-response", "On it - I'll take a look and follow up shortly."
+        return "needs-action", "needs-response", None
     return "no-action", "fyi", None
 
 
@@ -691,6 +691,119 @@ def write_to_inbox_db(item):
 
 
 # ---------------------------------------------------------------------------
+# Contextual draft generation via Claude CLI
+# ---------------------------------------------------------------------------
+
+def _generate_contextual_drafts(needs_action_items):
+    """
+    Batch-generate contextual draft responses for needs-action Slack items
+    using a single Claude CLI call with brain context.
+    Returns the items list with draft_response fields populated.
+    """
+    if not needs_action_items:
+        return needs_action_items
+
+    # Also fetch recent thread context for each item to give Claude more signal
+    token, _ = _load_slack_token_config()
+    items_with_context = []
+    for idx, item in enumerate(needs_action_items):
+        thread_context = ""
+        if token and item.get("channel_id") and item.get("thread_ts"):
+            try:
+                oldest_for_thread = str(time.time() - LOOKBACK_DAYS * 24 * 3600)
+                replies = _fetch_thread_replies(
+                    token, item["channel_id"], item["thread_ts"], oldest_for_thread
+                )
+                # Get last 10 messages for context
+                recent = replies[-10:] if len(replies) > 10 else replies
+                thread_lines = []
+                for r in recent:
+                    sender = r.get("user", "unknown")
+                    text = _clean_text(r.get("text", ""))[:300]
+                    if text:
+                        thread_lines.append(f"  {sender}: {text}")
+                if thread_lines:
+                    thread_context = "\n".join(thread_lines)
+            except Exception:
+                pass
+        items_with_context.append({
+            "index": idx,
+            "sender": item.get("sender", "unknown"),
+            "channel": item.get("channel", "unknown"),
+            "text": item.get("text", "")[:400],
+            "context_notes": item.get("context_notes", ""),
+            "thread_context": thread_context,
+        })
+
+    context = brain.build_context_prompt(needs_action_items)
+    items_json = json.dumps(items_with_context, indent=2)
+
+    prompt = f"""{context}
+
+I need you to draft contextual Slack responses for messages that need my attention.
+Read the conversation context carefully and draft a response that:
+- Addresses what the person is actually asking/saying
+- Uses the thread context to understand the full conversation
+- Is concise and natural (how a real person would reply on Slack)
+- Matches my response tone from the context above
+- References specific details from the conversation when relevant
+
+Messages needing drafts:
+{items_json}
+
+Return ONLY a JSON array where each element has:
+- "index": the message index number
+- "draft": your suggested response (1-3 sentences, Slack-appropriate)
+
+Example: [{{"index": 0, "draft": "Good question — I'd recommend keeping the invite-only approach for now since we're still rolling out the Okta integration. Once SSO is fully live we can revisit."}}]
+
+No prose, just the JSON array."""
+
+    try:
+        # Clear CLAUDECODE env var to avoid nested-session detection when
+        # the poller is tested from inside a Claude Code session.
+        clean_env = {k: v for k, v in os.environ.items() if not k.startswith("CLAUDECODE")}
+        result = subprocess.run(
+            ["claude", "--dangerously-skip-permissions", "--print", prompt],
+            capture_output=True, text=True, timeout=90,
+            env=clean_env,
+        )
+        if result.returncode != 0:
+            print(f"Draft generation CLI error: {result.stderr[:200]}")
+            return needs_action_items
+
+        output = result.stdout.strip()
+
+        # Parse learning from Claude output
+        try:
+            brain.parse_learning(output)
+        except Exception:
+            pass
+
+        # Extract JSON array
+        json_match = re.search(r"\[\s*\{.*\}\s*\]", output, re.DOTALL)
+        if json_match:
+            drafts = json.loads(json_match.group(0))
+        elif re.search(r"\[\s*\]", output):
+            drafts = []
+        else:
+            drafts = json.loads(output)
+
+        # Apply drafts back to items
+        draft_map = {d["index"]: d["draft"] for d in drafts if "index" in d and "draft" in d}
+        for idx, item in enumerate(needs_action_items):
+            if idx in draft_map:
+                item["draft_response"] = draft_map[idx]
+
+    except subprocess.TimeoutExpired:
+        print("Draft generation timed out (non-fatal)")
+    except (json.JSONDecodeError, Exception) as e:
+        print(f"Draft generation error (non-fatal): {e}")
+
+    return needs_action_items
+
+
+# ---------------------------------------------------------------------------
 # Fetch + classify via Claude CLI + Slack MCP
 # ---------------------------------------------------------------------------
 
@@ -801,6 +914,14 @@ def main():
     print(f"[{now.strftime('%H:%M')}] Processing {len(messages)} message(s)...")
     if skipped_count:
         print(f"[{now.strftime('%H:%M')}] Skipped {skipped_count} malformed Slack item(s)")
+
+    # Generate contextual drafts for needs-action items before DB write
+    pending_action = [m for m in messages if m.get("section") == "needs-action" and not m.get("responded") and not m.get("draft_response")]
+    if pending_action:
+        print(f"[{now.strftime('%H:%M')}] Generating contextual drafts for {len(pending_action)} item(s)...")
+        _generate_contextual_drafts(pending_action)
+        drafted = sum(1 for m in pending_action if m.get("draft_response"))
+        print(f"[{now.strftime('%H:%M')}] Generated {drafted}/{len(pending_action)} contextual draft(s)")
 
     # Write to inbox.db + collect needs-action for notification
     needs_action_items = []
