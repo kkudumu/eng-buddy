@@ -83,6 +83,8 @@ Temporary Items
 # Dashboard runtime
 dashboard/venv/
 dashboard/__pycache__/
+__pycache__/
+*.py[cod]
 
 # Runtime databases and state
 *.db
