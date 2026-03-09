@@ -60,9 +60,20 @@ copy_hooks_to "$DEST_PARENT_HOOKS"
 copy_hooks_to "$DEST_SKILL_HOOKS"
 copy_hooks_to "$DEST_RUNTIME_HOOKS"
 
-# Sync learning engine runtime files needed by hooks.
+sync_runtime_dashboard() {
+  mkdir -p "$DEST_RUNTIME_DASHBOARD"
+  rsync -a --delete \
+    --exclude 'venv/' \
+    --exclude '__pycache__/' \
+    --exclude '.pytest_cache/' \
+    --exclude '*.pyc' \
+    "$SOURCE_DASHBOARD_DIR/" "$DEST_RUNTIME_DASHBOARD/"
+  chmod +x "$DEST_RUNTIME_DASHBOARD/start.sh"
+}
+
+# Sync learning engine runtime files needed by hooks and the dashboard runtime mirror.
 cp "$SOURCE_BIN_DIR/brain.py" "$DEST_RUNTIME_BIN/brain.py"
-cp "$SOURCE_DASHBOARD_DIR/migrate.py" "$DEST_RUNTIME_DASHBOARD/migrate.py"
+sync_runtime_dashboard
 
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
@@ -154,6 +165,6 @@ echo "- $DEST_SKILL_HOOKS"
 echo "- $DEST_RUNTIME_HOOKS"
 echo "Synced learning runtime files to:"
 echo "- $DEST_RUNTIME_BIN/brain.py"
-echo "- $DEST_RUNTIME_DASHBOARD/migrate.py"
+echo "- $DEST_RUNTIME_DASHBOARD/ (full dashboard mirror)"
 echo "Patched hooks config in: $SETTINGS_FILE"
 echo "Done."
