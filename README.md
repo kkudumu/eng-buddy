@@ -25,6 +25,9 @@ cd ~/.claude/eng-buddy/dashboard
 ./start.sh --background
 # Serves at http://127.0.0.1:7777 via launchd
 
+# Or wait until the dashboard is reachable before opening the browser
+./start.sh --ensure-open
+
 # 3. Invoke the skill
 # In Claude Code:
 /eng-buddy

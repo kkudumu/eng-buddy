@@ -7,6 +7,7 @@ LAUNCH_AGENTS_DIR="$HOME/Library/LaunchAgents"
 LAUNCH_LABEL="com.engbuddy.dashboard"
 PLIST_PATH="$LAUNCH_AGENTS_DIR/$LAUNCH_LABEL.plist"
 LOG_FILE="$RUNTIME_DIR/dashboard.log"
+APP_URL="http://127.0.0.1:7777"
 HEALTH_URL="http://127.0.0.1:7777/api/health"
 
 combined_path() {
@@ -169,6 +170,12 @@ wait_for_health() {
   return 1
 }
 
+open_dashboard() {
+  if command -v open >/dev/null 2>&1; then
+    open "$APP_URL" >/dev/null 2>&1 || true
+  fi
+}
+
 start_agent_impl() {
   local timeout_seconds="${1:-45}"
   local pending_status="${2:-TIMEOUT}"
@@ -253,6 +260,41 @@ restart_agent() {
   return 1
 }
 
+ensure_open() {
+  local startup_status restart_status
+
+  startup_status="$(start_agent_background 2>/dev/null || true)"
+
+  case "$startup_status" in
+    ALREADY_RUNNING)
+      ;;
+    STARTED|STARTING)
+      if ! wait_for_health 20; then
+        restart_status="$(restart_agent 2>/dev/null || true)"
+        if [[ "$restart_status" != "STARTED" ]]; then
+          echo "TIMEOUT"
+          return 1
+        fi
+      fi
+      ;;
+    *)
+      restart_status="$(restart_agent 2>/dev/null || true)"
+      if [[ "$restart_status" != "STARTED" ]]; then
+        echo "TIMEOUT"
+        return 1
+      fi
+      ;;
+  esac
+
+  if ! is_healthy; then
+    echo "TIMEOUT"
+    return 1
+  fi
+
+  open_dashboard
+  echo "READY"
+}
+
 stop_agent() {
   bootout_agent
   stop_legacy_dashboard_process
@@ -285,6 +327,9 @@ serve_foreground() {
 }
 
 case "${1:-}" in
+  --ensure-open)
+    ensure_open
+    ;;
   --background)
     start_agent_background
     ;;
