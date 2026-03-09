@@ -793,6 +793,26 @@ def _cli():
         help="Read PostToolUse payload JSON from stdin and capture learning event",
     )
 
+    # --- Playbook Engine Commands ---
+    parser.add_argument("--playbook-trace-event", action="store_true",
+        help="Record a trace event (reads JSON from stdin: {trace_id, event})")
+    parser.add_argument("--playbook-extract", type=str, metavar="TRACE_ID",
+        help="Extract a draft playbook from a completed trace")
+    parser.add_argument("--playbook-extract-name", type=str, default="Untitled",
+        help="Name for the extracted playbook (used with --playbook-extract)")
+    parser.add_argument("--playbook-match", type=str, metavar="TEXT",
+        help="Find playbooks matching ticket text")
+    parser.add_argument("--playbook-match-type", type=str, default="",
+        help="Ticket type for matching (used with --playbook-match)")
+    parser.add_argument("--playbook-match-source", type=str, default="freshservice",
+        help="Source system for matching (used with --playbook-match)")
+    parser.add_argument("--playbook-list", action="store_true",
+        help="List all approved playbooks")
+    parser.add_argument("--playbook-list-drafts", action="store_true",
+        help="List all draft playbooks")
+    parser.add_argument("--playbook-promote", type=str, metavar="PLAYBOOK_ID",
+        help="Promote a draft playbook to approved")
+
     args = parser.parse_args()
 
     if args.register_learning_category:
@@ -818,6 +838,80 @@ def _cli():
 
         print(json.dumps(capture_post_tool_learning(payload)))
         return 0
+
+    # --- Playbook Engine Handlers ---
+    import os
+    PLAYBOOKS_DIR = os.path.expanduser("~/.claude/eng-buddy/playbooks")
+    TRACES_DIR = os.path.expanduser("~/.claude/eng-buddy/traces")
+    REGISTRY_DIR = os.path.join(PLAYBOOKS_DIR, "tool-registry")
+
+    # Add playbook_engine to sys.path
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "playbook_engine"))
+
+    if args.playbook_trace_event:
+        from playbook_engine.tracer import WorkflowTracer, TraceEvent
+        payload = json.load(sys.stdin)
+        tracer = WorkflowTracer(traces_dir=TRACES_DIR)
+        trace_id = payload["trace_id"]
+        tracer.load_trace(trace_id) or tracer.start_trace(trace_id)
+        event_data = payload["event"]
+        tracer.add_event(TraceEvent(**event_data))
+        tracer.flush(trace_id)
+        print(json.dumps({"status": "ok", "trace_id": trace_id}))
+        return 0
+
+    if args.playbook_extract:
+        from playbook_engine.tracer import WorkflowTracer
+        from playbook_engine.registry import ToolRegistry
+        from playbook_engine.extractor import PlaybookExtractor
+        from playbook_engine.manager import PlaybookManager
+        tracer = WorkflowTracer(traces_dir=TRACES_DIR)
+        trace = tracer.load_trace(args.playbook_extract)
+        if not trace:
+            print(json.dumps({"error": f"Trace {args.playbook_extract} not found"}))
+            return 1
+        registry = ToolRegistry(REGISTRY_DIR)
+        extractor = PlaybookExtractor(registry=registry)
+        pb = extractor.extract_from_trace(trace, name=args.playbook_extract_name)
+        manager = PlaybookManager(PLAYBOOKS_DIR)
+        path = manager.save_draft(pb)
+        print(json.dumps({"status": "ok", "playbook_id": pb.id, "path": path, "steps": len(pb.steps)}))
+        return 0
+
+    if args.playbook_match:
+        from playbook_engine.manager import PlaybookManager
+        manager = PlaybookManager(PLAYBOOKS_DIR)
+        matches = manager.match_ticket(
+            ticket_type=args.playbook_match_type,
+            text=args.playbook_match,
+            source=args.playbook_match_source,
+        )
+        print(json.dumps({"matches": [{"id": m.id, "name": m.name, "confidence": m.confidence, "executions": m.executions} for m in matches]}))
+        return 0
+
+    if args.playbook_list:
+        from playbook_engine.manager import PlaybookManager
+        manager = PlaybookManager(PLAYBOOKS_DIR)
+        pbs = manager.list_playbooks()
+        print(json.dumps({"playbooks": [{"id": p.id, "name": p.name, "confidence": p.confidence, "version": p.version, "executions": p.executions} for p in pbs]}))
+        return 0
+
+    if args.playbook_list_drafts:
+        from playbook_engine.manager import PlaybookManager
+        manager = PlaybookManager(PLAYBOOKS_DIR)
+        drafts = manager.list_drafts()
+        print(json.dumps({"drafts": [{"id": d.id, "name": d.name, "confidence": d.confidence, "steps": len(d.steps)} for d in drafts]}))
+        return 0
+
+    if args.playbook_promote:
+        from playbook_engine.manager import PlaybookManager
+        manager = PlaybookManager(PLAYBOOKS_DIR)
+        pb = manager.promote_draft(args.playbook_promote)
+        if pb:
+            print(json.dumps({"status": "ok", "playbook_id": pb.id}))
+            return 0
+        print(json.dumps({"error": f"Draft {args.playbook_promote} not found"}))
+        return 1
 
     parser.print_help()
     return 1

@@ -112,4 +112,18 @@ echo "If user confirms, run:"
 echo "python3 ~/.claude/eng-buddy/bin/brain.py --register-learning-category \"$SAFE_PROPOSED\" --description \"Captured from PostToolUse completion events\""
 echo ""
 
+# --- Feed Playbook Tracer ---
+# If there's an active trace (ticket context), also record in tracer
+ACTIVE_TRACE_FILE="$HOME/.claude/eng-buddy/.active-trace-id"
+if [ -f "$ACTIVE_TRACE_FILE" ]; then
+    TRACE_ID=$(cat "$ACTIVE_TRACE_FILE")
+    TOOL_NAME=$(echo "$PAYLOAD" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('tool_name',''))" 2>/dev/null)
+    TOOL_INPUT=$(echo "$PAYLOAD" | python3 -c "import sys,json; d=json.load(sys.stdin); print(json.dumps(d.get('tool_input',{})))" 2>/dev/null)
+
+    if [ -n "$TOOL_NAME" ]; then
+        echo "{\"trace_id\": \"$TRACE_ID\", \"event\": {\"type\": \"tool_call\", \"tool\": \"$TOOL_NAME\", \"params\": $TOOL_INPUT}}" | \
+            python3 "$HOME/.claude/eng-buddy/bin/brain.py" --playbook-trace-event 2>/dev/null
+    fi
+fi
+
 exit 0
