@@ -65,6 +65,20 @@ body {
 #header-settings { display: flex; align-items: center; gap: 8px; }
 .terminal-label { font-size: 10px; font-weight: 700; letter-spacing: 2px; color: var(--muted); }
 .toggle-label { font-size: 10px; font-weight: 700; letter-spacing: 2px; color: var(--muted); }
+.dashboard-restart-btn {
+  padding: 6px 12px;
+  font-size: 10px;
+  color: var(--fresh);
+  border-color: var(--fresh);
+  box-shadow: 2px 2px 0 var(--fresh);
+}
+.dashboard-restart-btn:hover {
+  background: var(--fresh);
+  color: #000;
+}
+.dashboard-restart-btn.restarting {
+  animation: pulse 1.2s infinite;
+}
 .terminal-select {
   background: var(--card-bg);
   color: var(--text);

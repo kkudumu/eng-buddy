@@ -2576,29 +2576,62 @@ document.getElementById('macos-notifications-toggle').addEventListener('change',
 });
 
 const restartBtn = document.getElementById('restart-btn');
+
+function setRestartButtonState(button, label, isRestarting) {
+  if (!button) return;
+  button.textContent = label;
+  button.classList.toggle('restarting', Boolean(isRestarting));
+  button.disabled = Boolean(isRestarting);
+}
+
 if (restartBtn) {
   restartBtn.addEventListener('click', async () => {
-    restartBtn.textContent = 'RESTARTING...';
-    restartBtn.classList.add('restarting');
+    setRestartButtonState(restartBtn, 'RESTARTING...', true);
     try {
       await fetch('/api/restart', { method: 'POST' });
-    } catch {}
+    } catch {
+      setRestartButtonState(restartBtn, 'RESTART FAILED', false);
+      return;
+    }
 
+    const startedAt = Date.now();
     const poll = setInterval(async () => {
+      if ((Date.now() - startedAt) > 120000) {
+        clearInterval(poll);
+        setRestartButtonState(restartBtn, 'RESTART TIMEOUT', false);
+        return;
+      }
+
       try {
-        const r = await fetch('/api/health');
-        if (r.ok) {
-          clearInterval(poll);
-          location.reload();
+        const health = await fetch('/api/health', { cache: 'no-store' });
+        if (!health.ok) return;
+
+        let phase = 'complete';
+        try {
+          const statusResponse = await fetch('/api/restart-status', { cache: 'no-store' });
+          if (statusResponse.ok) {
+            const status = await statusResponse.json();
+            phase = String(status.phase || 'complete').toLowerCase();
+          }
+        } catch {}
+
+        if (phase === 'restarting') {
+          setRestartButtonState(restartBtn, 'RESTARTING...', true);
+          return;
         }
+        if (phase === 'refreshing_data') {
+          setRestartButtonState(restartBtn, 'SYNCING DATA...', true);
+          return;
+        }
+        if (phase === 'failed') {
+          clearInterval(poll);
+          setRestartButtonState(restartBtn, 'RESTART FAILED', false);
+          return;
+        }
+        clearInterval(poll);
+        location.reload();
       } catch {}
     }, 1000);
-
-    setTimeout(() => {
-      clearInterval(poll);
-      restartBtn.textContent = 'RESTART';
-      restartBtn.classList.remove('restarting');
-    }, 30000);
   });
 }
 

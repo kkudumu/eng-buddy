@@ -33,6 +33,7 @@ MEMORY_DIR = ENG_BUDDY_DIR / "memory"
 RUNTIME_DIR = ENG_BUDDY_DIR / ".runtime"
 CLAUDE_SYNC_FILE = RUNTIME_DIR / "claude-sync-events.txt"
 LAUNCHER_DIR = RUNTIME_DIR / "launchers"
+RESTART_STATUS_FILE = RUNTIME_DIR / "dashboard-restart-status.json"
 DEFAULT_TERMINAL_APP = os.environ.get("ENG_BUDDY_TERMINAL", "Terminal")
 TERMINAL_APP = DEFAULT_TERMINAL_APP
 JIRA_USER = os.environ.get("ENG_BUDDY_JIRA_USER", "kioja.kudumu@klaviyo.com")
@@ -115,6 +116,26 @@ def _escape_applescript_text(value: str) -> str:
 
 def _settings_file() -> Path:
     return ENG_BUDDY_DIR / "dashboard-settings.json"
+
+
+def _load_restart_status() -> dict:
+    default = {"phase": "idle", "message": "", "updated_at": None}
+    if not RESTART_STATUS_FILE.exists():
+        return default
+
+    try:
+        raw = json.loads(RESTART_STATUS_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return default
+
+    if not isinstance(raw, dict):
+        return default
+
+    return {
+        "phase": str(raw.get("phase") or "idle"),
+        "message": str(raw.get("message") or ""),
+        "updated_at": raw.get("updated_at"),
+    }
 
 
 def _default_settings() -> dict:
@@ -1502,6 +1523,11 @@ async def health():
     return {"status": "ok"}
 
 
+@app.get("/api/restart-status")
+async def restart_status():
+    return _load_restart_status()
+
+
 @app.post("/api/debug/send-to-claude")
 async def send_debug_log_to_claude(body: dict = Body(default={})):
     log_line = str(body.get("log_line") or "").strip()
@@ -1537,21 +1563,21 @@ async def get_poller_status():
 
 @app.post("/api/restart")
 async def restart_server():
-    """Restart the dashboard through its launchd-managed launcher."""
+    """Restart the dashboard through its launchd-managed launcher with a fresh-data sync."""
     start_sh = Path(__file__).parent / "start.sh"
     if not start_sh.exists():
         raise HTTPException(500, "start.sh not found")
 
     try:
         subprocess.Popen(
-            ["/bin/bash", str(start_sh), "--restart"],
+            ["/bin/bash", str(start_sh), "--restart-fresh"],
             start_new_session=True,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
     except OSError as exc:
         raise HTTPException(500, f"failed to restart dashboard: {exc}") from exc
-    return {"status": "restarting", "manager": "launchd"}
+    return {"status": "restarting", "mode": "fresh", "manager": "launchd"}
 
 
 @app.get("/api/daily/logs")

@@ -36,11 +36,48 @@ async def test_restart_uses_launchd_managed_start_script(monkeypatch):
         r = await client.post("/api/restart")
 
     assert r.status_code == 200
-    assert r.json() == {"status": "restarting", "manager": "launchd"}
+    assert r.json() == {"status": "restarting", "mode": "fresh", "manager": "launchd"}
     assert captured["args"][0] == "/bin/bash"
     assert captured["args"][1].endswith("/dashboard/start.sh")
-    assert captured["args"][2] == "--restart"
+    assert captured["args"][2] == "--restart-fresh"
     assert captured["start_new_session"] is True
+
+
+@pytest.mark.asyncio
+async def test_restart_status_defaults_to_idle(tmp_path, monkeypatch):
+    monkeypatch.setattr(server, "RESTART_STATUS_FILE", tmp_path / "dashboard-restart-status.json")
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r = await client.get("/api/restart-status")
+
+    assert r.status_code == 200
+    assert r.json() == {"phase": "idle", "message": "", "updated_at": None}
+
+
+@pytest.mark.asyncio
+async def test_restart_status_reads_persisted_status(tmp_path, monkeypatch):
+    status_path = tmp_path / "dashboard-restart-status.json"
+    status_path.write_text(
+        json.dumps(
+            {
+                "phase": "refreshing_data",
+                "message": "Refreshing dashboard data sources",
+                "updated_at": "2026-03-09T19:00:00+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(server, "RESTART_STATUS_FILE", status_path)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r = await client.get("/api/restart-status")
+
+    assert r.status_code == 200
+    assert r.json() == {
+        "phase": "refreshing_data",
+        "message": "Refreshing dashboard data sources",
+        "updated_at": "2026-03-09T19:00:00+00:00",
+    }
 
 
 @pytest.mark.asyncio

@@ -3,12 +3,15 @@ set -euo pipefail
 
 RUNTIME_DIR="$HOME/.claude/eng-buddy"
 DASHBOARD_DIR="$RUNTIME_DIR/dashboard"
+RUNTIME_BIN_DIR="$RUNTIME_DIR/bin"
+RUNTIME_STATUS_DIR="$RUNTIME_DIR/.runtime"
 LAUNCH_AGENTS_DIR="$HOME/Library/LaunchAgents"
 LAUNCH_LABEL="com.engbuddy.dashboard"
 PLIST_PATH="$LAUNCH_AGENTS_DIR/$LAUNCH_LABEL.plist"
 LOG_FILE="$RUNTIME_DIR/dashboard.log"
 APP_URL="http://127.0.0.1:7777"
 HEALTH_URL="http://127.0.0.1:7777/api/health"
+RESTART_STATUS_FILE="$RUNTIME_STATUS_DIR/dashboard-restart-status.json"
 
 combined_path() {
   local claude_dir
@@ -18,6 +21,26 @@ combined_path() {
 
 launch_target() {
   echo "gui/$(id -u)/$LAUNCH_LABEL"
+}
+
+write_restart_status() {
+  local phase="${1:-idle}"
+  local message="${2:-}"
+  mkdir -p "$RUNTIME_STATUS_DIR"
+  python3 - "$RESTART_STATUS_FILE" "$phase" "$message" <<'PY'
+import json
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+path = Path(sys.argv[1])
+payload = {
+    "phase": sys.argv[2],
+    "message": sys.argv[3],
+    "updated_at": datetime.now(timezone.utc).isoformat(),
+}
+path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+PY
 }
 
 cleanup_runtime() {
@@ -170,6 +193,39 @@ wait_for_health() {
   return 1
 }
 
+refresh_data_now() {
+  local poller_scripts=(
+    "slack-poller.py"
+    "gmail-poller.py"
+    "calendar-poller.py"
+    "jira-poller.py"
+  )
+  local script log_path
+
+  if [[ ! -d "$RUNTIME_BIN_DIR" ]]; then
+    echo "Poller runtime dir not found: $RUNTIME_BIN_DIR" >&2
+    return 1
+  fi
+
+  for script in "${poller_scripts[@]}"; do
+    if [[ ! -f "$RUNTIME_BIN_DIR/$script" ]]; then
+      echo "Missing poller script: $RUNTIME_BIN_DIR/$script" >&2
+      return 1
+    fi
+  done
+
+  for script in "${poller_scripts[@]}"; do
+    log_path="$RUNTIME_DIR/${script%.py}.log"
+    echo "Refreshing $script..." >> "$LOG_FILE"
+    if ! PATH="$(combined_path)" python3 "$RUNTIME_BIN_DIR/$script" --refresh-now >> "$log_path" 2>&1; then
+      echo "Poller refresh failed: $script" >&2
+      return 1
+    fi
+  done
+
+  return 0
+}
+
 open_dashboard() {
   if command -v open >/dev/null 2>&1; then
     open "$APP_URL" >/dev/null 2>&1 || true
@@ -260,6 +316,23 @@ restart_agent() {
   return 1
 }
 
+restart_fresh_agent() {
+  write_restart_status "restarting" "Restarting dashboard server"
+  if ! restart_agent; then
+    write_restart_status "failed" "Dashboard restart timed out"
+    return 1
+  fi
+
+  write_restart_status "refreshing_data" "Refreshing dashboard data sources"
+  if ! refresh_data_now; then
+    write_restart_status "failed" "Dashboard restarted but fresh-data sync failed"
+    return 1
+  fi
+
+  write_restart_status "complete" "Dashboard restarted with fresh data"
+  echo "STARTED_FRESH"
+}
+
 ensure_open() {
   local startup_status restart_status
 
@@ -335,6 +408,9 @@ case "${1:-}" in
     ;;
   --restart)
     restart_agent
+    ;;
+  --restart-fresh)
+    restart_fresh_agent
     ;;
   --stop)
     stop_agent
