@@ -1,0 +1,57 @@
+/* Soft Kitty Light — Kawaii light */
+@import url('https://fonts.googleapis.com/css2?family=Patrick+Hand&family=Comfortaa:wght@400;700&display=swap');
+
+:root {
+  --bg: #fff5f0;
+  --card-bg: #ffffff;
+  --surface: #fff0ea;
+  --surface-alt: #ffe8e0;
+  --border: #f4889a;
+  --border-subtle: #f4c8d4;
+  --border-faint: #fde0e6;
+  --hover-bg: #fde8ec;
+  --text: #3d2040;
+  --muted: #9a7088;
+  --overlay-bg: rgba(255, 245, 240, 0.92);
+
+  --font: 'Comfortaa', sans-serif;
+  --font-heading: 'Patrick Hand', cursive;
+
+  --radius: 16px;
+  --radius-sm: 10px;
+  --transition-speed: 0.2s;
+
+  --shadow: 3px 3px 12px rgba(244, 136, 154, 0.18);
+  --shadow-sm: 2px 2px 8px rgba(244, 136, 154, 0.12);
+  --shadow-hover: 4px 4px 18px rgba(244, 136, 154, 0.25);
+
+  --fresh: #40b87a;
+  --jira: #4a8de0;
+  --slack: #e0506a;
+  --gmail: #e04a3a;
+  --urgent: #3d2040;
+  --needs-response: #c4a020;
+
+  --debug-info: #4a8de0;
+  --debug-error: #e04a3a;
+  --debug-surface: rgba(255, 255, 255, 0.97);
+
+  --held-stripe: repeating-linear-gradient(
+    45deg, #fde0e6, #fde0e6 4px, #fff 4px, #fff 8px
+  );
+}
+
+/* Same kawaii geometry overrides as dark variant */
+.card { border-style: dashed; border-width: 2.5px; }
+.card:hover { transform: translateY(-2px); }
+.filter-btn.active { border-bottom: 3px dashed var(--text); }
+#header { border-bottom-style: dashed; }
+#filter-bar { border-bottom-style: dashed; }
+.debug-drawer { border-style: dashed; box-shadow: 4px 4px 16px rgba(244, 136, 154, 0.12); }
+.badge { border-radius: 999px; }
+.action-btn { border-style: dashed; border-radius: 999px; padding: 8px 20px; }
+.count-badge { border-style: dashed; border-radius: 999px; }
+.section-header { border-bottom-style: dashed; letter-spacing: 2px; }
+#header-title { font-family: var(--font-heading); font-size: 24px; letter-spacing: 2px; }
+.briefing-title { font-family: var(--font-heading); }
+.briefing-modal { border-style: dashed; box-shadow: 4px 4px 16px rgba(244, 136, 154, 0.15); }
