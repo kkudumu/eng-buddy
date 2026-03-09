@@ -6,6 +6,33 @@ The eng-buddy skill includes a seven-hook automation system that handles automat
 
 ## Installation Steps
 
+### 0. Clone + Run The One-Shot Installer
+
+For a fresh machine or a fresh clone, this is the recommended path:
+
+```bash
+git clone https://github.com/kkudumu/eng-buddy.git ~/src/eng-buddy
+bash ~/src/eng-buddy/bin/install-eng-buddy.sh
+```
+
+What this does automatically:
+- Installs and patches hooks in `~/.claude`
+- Mirrors the dashboard into `~/.claude/eng-buddy/dashboard`
+- Seeds `~/.claude/eng-buddy/bin` with the runtime poller scripts
+- Installs/reloads the Gmail, Slack, Calendar, and Jira LaunchAgents
+- Starts the dashboard through launchd
+
+What it does not do automatically:
+- Create external service credentials for you
+- Configure Gmail OAuth, Slack tokens, or Atlassian/Freshservice MCP access
+- Populate your personal eng-buddy data files
+
+If you want it to wait for the dashboard and open the browser:
+
+```bash
+ENG_BUDDY_OPEN_DASHBOARD=1 bash ~/src/eng-buddy/bin/install-eng-buddy.sh
+```
+
 ### 1. Run the Hook Installer (Recommended)
 
 Use the one-shot installer to sync hooks to all relevant parent/child locations and patch settings:

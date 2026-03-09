@@ -17,25 +17,28 @@ A Claude Code skill + local web dashboard that turns your `~/.claude/` directory
 ## Quick Start
 
 ```bash
-# 1. Clone the repo (if you haven't already)
-git clone https://github.com/kkudumu/clod.git ~/.claude
+# 1. Clone the repo anywhere convenient
+git clone https://github.com/kkudumu/eng-buddy.git ~/src/eng-buddy
 
-# 2. Start the dashboard
-cd ~/.claude/eng-buddy/dashboard
-./start.sh --background
-# Serves at http://127.0.0.1:7777 via launchd
-
-# Or wait until the dashboard is reachable before opening the browser
-./start.sh --ensure-open
+# 2. Run the one-shot installer
+bash ~/src/eng-buddy/bin/install-eng-buddy.sh
 
 # 3. Invoke the skill
 # In Claude Code:
 /eng-buddy
 ```
 
-`--background` returns quickly. It prints `ALREADY_RUNNING`, `STARTED`, or `STARTING` for a healthy or booting dashboard, and only prints `TIMEOUT` when launchd could not get the service off the ground.
+The installer is idempotent. It syncs hooks into `~/.claude`, mirrors the dashboard into `~/.claude/eng-buddy/dashboard`, installs/reloads the Gmail/Slack/Calendar/Jira LaunchAgents, seeds `~/.claude/eng-buddy/bin` with the runtime poller scripts, and starts the dashboard via launchd.
 
-The dashboard auto-creates a Python venv and installs dependencies on first run.
+It handles the local machine setup for eng-buddy. You still need to provide your own external credentials and integrations, such as Gmail OAuth files, Slack tokens, and Atlassian/Freshservice MCP configuration.
+
+If you want the installer to wait for dashboard health and open the browser immediately, run:
+
+```bash
+ENG_BUDDY_OPEN_DASHBOARD=1 bash ~/src/eng-buddy/bin/install-eng-buddy.sh
+```
+
+The dashboard runtime auto-creates a Python venv and installs dependencies on first run.
 
 ## Architecture
 
