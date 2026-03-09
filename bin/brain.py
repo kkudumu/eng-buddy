@@ -855,7 +855,7 @@ def _cli():
         trace_id = payload["trace_id"]
         tracer.load_trace(trace_id) or tracer.start_trace(trace_id)
         event_data = payload["event"]
-        tracer.add_event(TraceEvent(**event_data))
+        tracer.add_event(TraceEvent.from_dict(event_data))
         tracer.flush(trace_id)
         print(json.dumps({"status": "ok", "trace_id": trace_id}))
         return 0

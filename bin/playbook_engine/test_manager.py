@@ -63,3 +63,23 @@ def test_archive_version(tmp_path):
     assert loaded.version == 2
     archives = mgr.list_archive("versioned")
     assert len(archives) == 1
+
+def test_invalid_playbook_id_rejected(tmp_path):
+    mgr = PlaybookManager(str(tmp_path))
+    import pytest
+    with pytest.raises(ValueError):
+        mgr.get("../../../etc/passwd")
+    with pytest.raises(ValueError):
+        mgr.get("UPPER_CASE")
+    with pytest.raises(ValueError):
+        mgr.get("")
+    with pytest.raises(ValueError):
+        mgr.delete_draft("../../bad")
+
+def test_delete_nonexistent_draft(tmp_path):
+    mgr = PlaybookManager(str(tmp_path))
+    assert mgr.delete_draft("nonexistent") is False
+
+def test_promote_nonexistent_draft(tmp_path):
+    mgr = PlaybookManager(str(tmp_path))
+    assert mgr.promote_draft("nonexistent") is None

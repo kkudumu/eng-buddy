@@ -1907,6 +1907,17 @@ async def refresh_suggestions():
 PLAYBOOKS_DIR = os.path.expanduser("~/.claude/eng-buddy/playbooks")
 BRAIN_PY = os.path.expanduser("~/.claude/eng-buddy/bin/brain.py")
 
+# Add playbook_engine to import path once at module level (thread-safe)
+_PLAYBOOK_ENGINE_PATH = os.path.expanduser("~/.claude/eng-buddy/bin")
+if _PLAYBOOK_ENGINE_PATH not in sys.path:
+    sys.path.insert(0, _PLAYBOOK_ENGINE_PATH)
+
+
+def _get_playbook_manager():
+    """Get a PlaybookManager instance (lazy import at module level)."""
+    from playbook_engine.manager import PlaybookManager
+    return PlaybookManager(PLAYBOOKS_DIR)
+
 
 def _run_brain(args: list, stdin_data: str = None) -> dict:
     """Run brain.py with playbook args and return parsed JSON."""
@@ -1935,9 +1946,7 @@ async def list_draft_playbooks():
 @app.get("/api/playbooks/{playbook_id}")
 async def get_playbook(playbook_id: str):
     """Get a specific playbook with full step details."""
-    sys.path.insert(0, os.path.expanduser("~/.claude/eng-buddy/bin"))
-    from playbook_engine.manager import PlaybookManager
-    mgr = PlaybookManager(PLAYBOOKS_DIR)
+    mgr = _get_playbook_manager()
     pb = mgr.get(playbook_id) or mgr.get_draft(playbook_id)
     if not pb:
         raise HTTPException(status_code=404, detail="Playbook not found")
@@ -1953,9 +1962,7 @@ async def promote_playbook(playbook_id: str):
 @app.delete("/api/playbooks/drafts/{playbook_id}")
 async def delete_draft_playbook(playbook_id: str):
     """Delete a draft playbook."""
-    sys.path.insert(0, os.path.expanduser("~/.claude/eng-buddy/bin"))
-    from playbook_engine.manager import PlaybookManager
-    mgr = PlaybookManager(PLAYBOOKS_DIR)
+    mgr = _get_playbook_manager()
     if mgr.delete_draft(playbook_id):
         return {"status": "ok"}
     raise HTTPException(status_code=404, detail="Draft not found")
@@ -1982,9 +1989,7 @@ async def execute_playbook(body: dict = Body(...)):
     ticket_context = body.get("ticket_context", {})
     approval = body.get("approval", "approve all")
 
-    sys.path.insert(0, os.path.expanduser("~/.claude/eng-buddy/bin"))
-    from playbook_engine.manager import PlaybookManager
-    mgr = PlaybookManager(PLAYBOOKS_DIR)
+    mgr = _get_playbook_manager()
     pb = mgr.get(playbook_id)
     if not pb:
         raise HTTPException(status_code=404, detail="Playbook not found")
@@ -2013,11 +2018,16 @@ Use the eng-buddy skill. Execute each non-skipped step using the specified tools
 For human-required steps, open the browser to the right page and wait for user signal.
 Report progress after each step."""
 
-    # Launch in user's terminal via osascript
-    escaped_prompt = prompt.replace('"', '\\"').replace("'", "'\\''")
-    launch_cmd = f"""osascript -e 'tell application "Terminal" to do script "claude --print \\"{escaped_prompt}\\""'"""
+    # Launch in user's terminal via osascript (write prompt to temp file to avoid shell injection)
+    prompt_file = tempfile.NamedTemporaryFile(mode="w", suffix=".txt", prefix="playbook-", delete=False)
+    prompt_file.write(prompt)
+    prompt_file.close()
+    launch_cmd = [
+        "osascript", "-e",
+        f'tell application "Terminal" to do script "claude --print \\"$(cat {prompt_file.name})\\"; rm -f {prompt_file.name}"',
+    ]
 
-    result = subprocess.run(launch_cmd, shell=True, capture_output=True, text=True)
+    result = subprocess.run(launch_cmd, capture_output=True, text=True)
     if result.returncode == 0:
         return {"status": "dispatched", "playbook_id": playbook_id, "steps": len(pb.steps), "excluded": list(excluded_steps)}
     return {"error": "Failed to launch terminal", "details": result.stderr}
@@ -2035,7 +2045,7 @@ def _parse_approval(approval: str, total_steps: int) -> set:
     but_match = re.search(r"but\s+(.+)", approval_lower)
     if but_match:
         nums = re.findall(r"#?(\d+)", but_match.group(1))
-        excluded = {int(n) for n in nums}
+        excluded = {int(n) for n in nums if 1 <= int(n) <= total_steps}
 
     return excluded
 

@@ -91,3 +91,76 @@ def test_confidence_progression():
     pb.record_execution(success=True)
     assert pb.confidence == "high"
     assert pb.executions == 3
+
+def test_confidence_degradation_on_failure():
+    raw = {
+        "id": "t",
+        "name": "T",
+        "version": 1,
+        "confidence": "high",
+        "trigger_patterns": [],
+        "created_from": "session",
+        "executions": 5,
+        "steps": [],
+    }
+    pb = Playbook.from_dict(raw)
+    pb.record_execution(success=False)
+    assert pb.confidence == "medium"
+    pb.record_execution(success=False)
+    assert pb.confidence == "low"
+    # Already at low — should stay at low
+    pb.record_execution(success=False)
+    assert pb.confidence == "low"
+
+def test_empty_trigger_patterns_match_everything():
+    """Playbook with no trigger patterns should NOT match any ticket."""
+    raw = {
+        "id": "t",
+        "name": "T",
+        "version": 1,
+        "confidence": "low",
+        "trigger_patterns": [],
+        "created_from": "session",
+        "executions": 0,
+        "steps": [],
+    }
+    pb = Playbook.from_dict(raw)
+    # Empty trigger list means no patterns match (any() on empty returns False)
+    assert not pb.matches(text="anything", source="freshservice")
+
+def test_to_dict_from_dict_round_trip():
+    """Verify full round-trip serialization symmetry."""
+    raw = {
+        "id": "round-trip",
+        "name": "Round Trip Test",
+        "version": 2,
+        "confidence": "medium",
+        "trigger_patterns": [
+            {"ticket_type": "Service Request", "keywords": ["SSO"], "source": ["freshservice"]}
+        ],
+        "created_from": "dictated",
+        "executions": 5,
+        "steps": [
+            {
+                "id": 1,
+                "name": "Do something",
+                "action": {
+                    "tool": "test_tool",
+                    "params": {"key": "value"},
+                    "param_sources": {"key": {"from": "trigger_ticket", "field": "subject"}},
+                },
+                "auth_required": True,
+                "auth_method": "stored_session",
+                "human_required": False,
+                "optional": True,
+            }
+        ],
+        "last_executed": "2026-01-01T00:00:00Z",
+        "last_updated": "2026-01-02T00:00:00Z",
+        "update_history": [{"version": 2, "reason": "test"}],
+    }
+    pb = Playbook.from_dict(raw)
+    d = pb.to_dict()
+    pb2 = Playbook.from_dict(d)
+    d2 = pb2.to_dict()
+    assert d == d2

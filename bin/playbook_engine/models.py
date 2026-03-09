@@ -176,13 +176,10 @@ class Playbook:
             "created_from": self.created_from,
             "executions": self.executions,
             "steps": [s.to_dict() for s in self.steps],
+            "last_executed": self.last_executed,
+            "last_updated": self.last_updated,
+            "update_history": self.update_history,
         }
-        if self.last_executed:
-            d["last_executed"] = self.last_executed
-        if self.last_updated:
-            d["last_updated"] = self.last_updated
-        if self.update_history:
-            d["update_history"] = self.update_history
         return d
 
     def save(self, path: str) -> None:
@@ -199,6 +196,15 @@ class Playbook:
         return any(t.matches(ticket_type, text, source) for t in self.trigger_patterns)
 
     def record_execution(self, success: bool) -> None:
+        """Record an execution and adjust confidence.
+
+        Confidence progression (cumulative successful executions):
+          low -> medium: at 1+ successful execution
+          medium -> high: at 3+ cumulative successful executions
+        On failure: confidence drops one level. Note: executions tracks total
+        (success + failure), so a playbook at medium with 2 executions that fails
+        will drop to low at 3 executions, needing 3+ total successes to reach high.
+        """
         self.executions += 1
         if success:
             idx = CONFIDENCE_ORDER.index(self.confidence)

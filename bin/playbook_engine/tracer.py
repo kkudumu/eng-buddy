@@ -37,6 +37,13 @@ class TraceEvent:
     # inferred
     inferred_intent: Optional[str] = None
 
+    @classmethod
+    def from_dict(cls, d: dict) -> "TraceEvent":
+        """Create a TraceEvent from a dictionary, ignoring unknown keys."""
+        valid_fields = {f.name for f in cls.__dataclass_fields__.values()}
+        filtered = {k: v for k, v in d.items() if k in valid_fields}
+        return cls(**filtered)
+
     def to_dict(self) -> dict:
         d = {"type": self.type, "timestamp": self.timestamp}
         # Include only non-None fields relevant to this event type
