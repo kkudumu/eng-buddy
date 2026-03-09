@@ -10,6 +10,7 @@ import tempfile
 import time
 import threading
 from datetime import date, datetime, timedelta, timezone
+from difflib import SequenceMatcher
 from pathlib import Path
 from contextlib import asynccontextmanager
 
@@ -64,6 +65,7 @@ _jira_cache = {"data": None, "fetched_at": 0}
 _stale_sources = set()
 _suggestion_refresh_lock = threading.Lock()
 _suggestion_worker_started = False
+_running_syncs: dict[str, subprocess.Popen] = {}
 POLLER_DEFINITIONS = (
     {
         "id": "slack",
@@ -142,6 +144,8 @@ def _default_settings() -> dict:
     return {
         "terminal": DEFAULT_TERMINAL_APP,
         "macos_notifications": False,
+        "theme": "neon-dreams",
+        "mode": "dark",
     }
 
 
@@ -161,6 +165,12 @@ def _load_settings() -> dict:
         if isinstance(terminal, str) and terminal:
             settings["terminal"] = terminal
         settings["macos_notifications"] = bool(loaded.get("macos_notifications", False))
+        theme = loaded.get("theme")
+        if isinstance(theme, str) and theme in ("midnight-ops", "soft-kitty", "neon-dreams"):
+            settings["theme"] = theme
+        mode = loaded.get("mode")
+        if isinstance(mode, str) and mode in ("dark", "light"):
+            settings["mode"] = mode
     return settings
 
 
@@ -172,6 +182,12 @@ def _save_settings(settings: dict) -> dict:
     normalized["macos_notifications"] = bool(
         settings.get("macos_notifications", normalized["macos_notifications"])
     )
+    theme = settings.get("theme", normalized["theme"])
+    if theme in ("midnight-ops", "soft-kitty", "neon-dreams"):
+        normalized["theme"] = theme
+    mode = settings.get("mode", normalized["mode"])
+    if mode in ("dark", "light"):
+        normalized["mode"] = mode
     path.write_text(json.dumps(normalized, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return normalized
 
@@ -1884,6 +1900,144 @@ async def get_suggestions(refresh: bool = False):
 @app.post("/api/suggestions/refresh")
 async def refresh_suggestions():
     return _refresh_suggestions_sync()
+
+
+# ========== PLAYBOOK ENGINE ==========
+
+PLAYBOOKS_DIR = os.path.expanduser("~/.claude/eng-buddy/playbooks")
+BRAIN_PY = os.path.expanduser("~/.claude/eng-buddy/bin/brain.py")
+
+
+def _run_brain(args: list, stdin_data: str = None) -> dict:
+    """Run brain.py with playbook args and return parsed JSON."""
+    cmd = ["python3", BRAIN_PY] + args
+    result = subprocess.run(cmd, capture_output=True, text=True, input=stdin_data, timeout=30)
+    if result.returncode != 0:
+        return {"error": result.stderr.strip()}
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return {"error": "Invalid JSON from brain.py", "raw": result.stdout}
+
+
+@app.get("/api/playbooks")
+async def list_playbooks():
+    """List all approved playbooks."""
+    return _run_brain(["--playbook-list"])
+
+
+@app.get("/api/playbooks/drafts")
+async def list_draft_playbooks():
+    """List all draft playbooks awaiting review."""
+    return _run_brain(["--playbook-list-drafts"])
+
+
+@app.get("/api/playbooks/{playbook_id}")
+async def get_playbook(playbook_id: str):
+    """Get a specific playbook with full step details."""
+    sys.path.insert(0, os.path.expanduser("~/.claude/eng-buddy/bin"))
+    from playbook_engine.manager import PlaybookManager
+    mgr = PlaybookManager(PLAYBOOKS_DIR)
+    pb = mgr.get(playbook_id) or mgr.get_draft(playbook_id)
+    if not pb:
+        raise HTTPException(status_code=404, detail="Playbook not found")
+    return pb.to_dict()
+
+
+@app.post("/api/playbooks/{playbook_id}/promote")
+async def promote_playbook(playbook_id: str):
+    """Promote a draft playbook to approved."""
+    return _run_brain(["--playbook-promote", playbook_id])
+
+
+@app.delete("/api/playbooks/drafts/{playbook_id}")
+async def delete_draft_playbook(playbook_id: str):
+    """Delete a draft playbook."""
+    sys.path.insert(0, os.path.expanduser("~/.claude/eng-buddy/bin"))
+    from playbook_engine.manager import PlaybookManager
+    mgr = PlaybookManager(PLAYBOOKS_DIR)
+    if mgr.delete_draft(playbook_id):
+        return {"status": "ok"}
+    raise HTTPException(status_code=404, detail="Draft not found")
+
+
+@app.post("/api/playbooks/match")
+async def match_playbook(body: dict = Body(...)):
+    """Match a ticket against known playbooks."""
+    text = body.get("text", "")
+    ticket_type = body.get("ticket_type", "")
+    source = body.get("source", "freshservice")
+    args = ["--playbook-match", text]
+    if ticket_type:
+        args += ["--playbook-match-type", ticket_type]
+    if source:
+        args += ["--playbook-match-source", source]
+    return _run_brain(args)
+
+
+@app.post("/api/playbooks/execute")
+async def execute_playbook(body: dict = Body(...)):
+    """Dispatch a playbook for execution in user's terminal."""
+    playbook_id = body.get("playbook_id")
+    ticket_context = body.get("ticket_context", {})
+    approval = body.get("approval", "approve all")
+
+    sys.path.insert(0, os.path.expanduser("~/.claude/eng-buddy/bin"))
+    from playbook_engine.manager import PlaybookManager
+    mgr = PlaybookManager(PLAYBOOKS_DIR)
+    pb = mgr.get(playbook_id)
+    if not pb:
+        raise HTTPException(status_code=404, detail="Playbook not found")
+
+    # Parse approval to determine which steps to execute
+    excluded_steps = _parse_approval(approval, len(pb.steps))
+
+    # Build the prompt for Claude Code
+    step_list = []
+    for step in pb.steps:
+        if step.id in excluded_steps:
+            step_list.append(f"  {step.id}. [SKIP] {step.name}")
+        else:
+            tool_label = step.action.tool.split("__")[-1] if "__" in step.action.tool else step.action.tool
+            step_list.append(f"  {step.id}. {step.name} -> {tool_label}")
+
+    prompt = f"""Execute playbook: {pb.name} (v{pb.version})
+Ticket: {ticket_context.get('title', 'N/A')}
+
+Steps:
+{chr(10).join(step_list)}
+
+Approval: {approval}
+
+Use the eng-buddy skill. Execute each non-skipped step using the specified tools.
+For human-required steps, open the browser to the right page and wait for user signal.
+Report progress after each step."""
+
+    # Launch in user's terminal via osascript
+    escaped_prompt = prompt.replace('"', '\\"').replace("'", "'\\''")
+    launch_cmd = f"""osascript -e 'tell application "Terminal" to do script "claude --print \\"{escaped_prompt}\\""'"""
+
+    result = subprocess.run(launch_cmd, shell=True, capture_output=True, text=True)
+    if result.returncode == 0:
+        return {"status": "dispatched", "playbook_id": playbook_id, "steps": len(pb.steps), "excluded": list(excluded_steps)}
+    return {"error": "Failed to launch terminal", "details": result.stderr}
+
+
+def _parse_approval(approval: str, total_steps: int) -> set:
+    """Parse approval string into set of excluded step IDs."""
+    excluded = set()
+    approval_lower = approval.lower().strip()
+
+    if approval_lower == "approve all":
+        return excluded
+
+    # "approve all but #3, #5"
+    but_match = re.search(r"but\s+(.+)", approval_lower)
+    if but_match:
+        nums = re.findall(r"#?(\d+)", but_match.group(1))
+        excluded = {int(n) for n in nums}
+
+    return excluded
 
 
 @app.post("/api/cards/approve-all")
@@ -3826,6 +3980,10 @@ async def update_settings(body: dict):
         settings["terminal"] = body["terminal"]
     if "macos_notifications" in body:
         settings["macos_notifications"] = bool(body["macos_notifications"])
+    if "theme" in body:
+        settings["theme"] = body["theme"]
+    if "mode" in body:
+        settings["mode"] = body["mode"]
     settings = _save_settings(settings)
     TERMINAL_APP = settings["terminal"]
     return settings
@@ -4060,6 +4218,54 @@ async def cache_invalidate(body: dict):
     return {"ok": True}
 
 
+@app.post("/api/pollers/{poller_id}/sync")
+async def force_sync_poller(poller_id: str):
+    """Trigger an immediate poller sync."""
+    poller = None
+    for p in POLLER_DEFINITIONS:
+        if p["id"] == poller_id:
+            poller = p
+            break
+    if not poller:
+        raise HTTPException(404, f"unknown poller: {poller_id}")
+
+    # Check if already running
+    existing = _running_syncs.get(poller_id)
+    if existing and existing.poll() is None:
+        return {"status": "already_syncing", "poller": poller_id}
+
+    script_map = {
+        "slack": "slack-poller.py",
+        "gmail": "gmail-poller.py",
+        "calendar": "calendar-poller.py",
+        "jira": "jira-poller.py",
+    }
+    script_name = script_map.get(poller_id)
+    if not script_name:
+        raise HTTPException(400, f"no script for poller: {poller_id}")
+
+    script_path = ENG_BUDDY_DIR / "bin" / script_name
+    if not script_path.exists():
+        script_path = RUNTIME_DIR / "bin" / script_name
+    if not script_path.exists():
+        raise HTTPException(500, f"poller script not found: {script_name}")
+
+    # Clean up finished syncs to avoid accumulating dead Popen objects
+    for pid, p in list(_running_syncs.items()):
+        if p.poll() is not None:
+            del _running_syncs[pid]
+
+    proc = subprocess.Popen(
+        [sys.executable, str(script_path)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        cwd=str(ENG_BUDDY_DIR),
+    )
+    _running_syncs[poller_id] = proc
+
+    return {"status": "syncing", "poller": poller_id}
+
+
 @app.get("/api/briefing")
 async def get_briefing(regenerate: bool = False):
     """Generate or return cached morning briefing."""
@@ -4272,6 +4478,151 @@ def _track_ignored_pattern(conn, summary):
             [sender]
         )
     conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# Cross-channel resolution helpers
+# ---------------------------------------------------------------------------
+
+def _extract_person_name(card: dict) -> str:
+    """Extract person name from card summary and proposed_actions."""
+    summary = card.get("summary", "")
+    # Gmail format: "Name <email>: Subject"
+    email_match = re.match(r"^(.+?)\s*<[^>]+>", summary)
+    if email_match:
+        return email_match.group(1).strip()
+    # Slack format: "Name via #channel: text"
+    slack_match = re.match(r"^(.+?)\s+via\s+", summary)
+    if slack_match:
+        return slack_match.group(1).strip()
+    # Try proposed_actions for sender info
+    actions = card.get("proposed_actions")
+    if isinstance(actions, str):
+        try:
+            actions = json.loads(actions)
+        except (json.JSONDecodeError, TypeError):
+            actions = []
+    if isinstance(actions, list):
+        for a in actions:
+            sender = a.get("sender", "") or a.get("to_email", "")
+            if sender:
+                name_match = re.match(r"^(.+?)\s*<", sender)
+                if name_match:
+                    return name_match.group(1).strip()
+                if "@" in sender:
+                    return sender.split("@")[0].replace(".", " ").title()
+                return sender
+    return ""
+
+
+def _extract_topic_words(card: dict) -> set:
+    """Extract meaningful topic words from card summary and context_notes."""
+    text = f"{card.get('summary', '')} {card.get('context_notes', '')}"
+    text = re.sub(r"<[^>]+>", " ", text)  # remove emails in angle brackets
+    text = re.sub(r"\b\d{1,2}:\d{2}\b", " ", text)  # remove times
+    text = re.sub(r"\b\d{4}-\d{2}-\d{2}\b", " ", text)  # remove dates
+    words = set(re.findall(r"[a-zA-Z]{3,}", text.lower()))
+    stop = {"the", "and", "for", "are", "but", "not", "you", "all", "can", "had",
+            "her", "was", "one", "our", "out", "has", "have", "from", "this", "that",
+            "with", "they", "been", "said", "each", "which", "their", "will", "way",
+            "about", "many", "then", "them", "would", "like", "into", "just", "than",
+            "some", "could", "other", "gmail", "slack", "via", "needs", "response",
+            "action", "needed", "noise", "pending", "card"}
+    return words - stop
+
+
+def _person_similarity(name_a: str, name_b: str) -> float:
+    """Fuzzy match two person names. Returns 0.0-1.0."""
+    if not name_a or not name_b:
+        return 0.0
+    a = name_a.lower().strip()
+    b = name_b.lower().strip()
+    if a == b:
+        return 1.0
+    if a in b or b in a:
+        return 0.9
+    return SequenceMatcher(None, a, b).ratio()
+
+
+def _topic_similarity(words_a: set, words_b: set) -> float:
+    """Jaccard similarity on word sets. Returns 0.0-1.0."""
+    if not words_a or not words_b:
+        return 0.0
+    intersection = words_a & words_b
+    union = words_a | words_b
+    return len(intersection) / len(union) if union else 0.0
+
+
+@app.post("/api/cards/{card_id}/resolve-related")
+async def resolve_related_cards(card_id: int):
+    """Find and auto-resolve cross-channel cards matching person + topic."""
+    conn = get_db()
+    try:
+        source_row = conn.execute("SELECT * FROM cards WHERE id = ?", [card_id]).fetchone()
+        if not source_row:
+            raise HTTPException(404, "card not found")
+        source_card = _row_to_card(source_row)
+
+        if not source_card.get("responded"):
+            return {"resolved": 0, "cards": []}
+
+        source_name = _extract_person_name(source_card)
+        source_topics = _extract_topic_words(source_card)
+        source_source = source_card.get("source", "")
+
+        if not source_name:
+            return {"resolved": 0, "cards": [], "reason": "no person name extracted"}
+
+        needs_sections = ("needs-action", "action-needed", "needs-response", "needs_response")
+        placeholders = ",".join("?" for _ in needs_sections)
+        candidates = conn.execute(
+            f"""SELECT * FROM cards
+                WHERE source != ?
+                  AND responded = 0
+                  AND section IN ({placeholders})
+                  AND status = 'pending'""",
+            [source_source, *needs_sections],
+        ).fetchall()
+
+        resolved = []
+        affected_sources = set()
+
+        for row in candidates:
+            candidate = _row_to_card(row)
+            cand_name = _extract_person_name(candidate)
+            cand_topics = _extract_topic_words(candidate)
+
+            person_score = _person_similarity(source_name, cand_name)
+            topic_score = _topic_similarity(source_topics, cand_topics)
+
+            if person_score >= 0.8 and topic_score >= 0.3:
+                existing_notes = candidate.get("context_notes", "") or ""
+                new_notes = f"{existing_notes}\nAuto-resolved: responded via {source_source}".strip()
+                conn.execute(
+                    """UPDATE cards
+                       SET responded = 1, section = 'no-action', classification = 'responded',
+                           context_notes = ?
+                       WHERE id = ?""",
+                    [new_notes, candidate["id"]],
+                )
+                resolved.append({
+                    "id": candidate["id"],
+                    "source": candidate.get("source"),
+                    "summary": candidate.get("summary", "")[:100],
+                    "person_score": round(person_score, 2),
+                    "topic_score": round(topic_score, 2),
+                })
+                affected_sources.add(candidate.get("source", ""))
+
+        if resolved:
+            conn.commit()
+            for src in affected_sources:
+                _stale_sources.add(src)
+
+    finally:
+        conn.close()
+
+    return {"resolved": len(resolved), "cards": resolved}
 
 
 def _record_stat(metric, value=1, details=None):
