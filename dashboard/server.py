@@ -3773,4 +3773,5 @@ def _record_stat(metric, value=1, details=None):
 
 
 if __name__ == "__main__":
-    uvicorn.run("server:app", host="127.0.0.1", port=7777, reload=True)
+    reload_enabled = os.environ.get("ENG_BUDDY_DASHBOARD_RELOAD", "").strip().lower() in {"1", "true", "yes"}
+    uvicorn.run("server:app", host="127.0.0.1", port=7777, reload=reload_enabled)
