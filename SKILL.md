@@ -23,19 +23,22 @@ STEP 0: Install/sync hooks, then activate auto-logging (MUST DO FIRST)
 - Hook will detect when you report completed actions and prompt logging
 
 STEP 0.5: Launch dashboard (MUST DO ON EVERY INVOCATION)
-- Use Bash: ~/.claude/eng-buddy/dashboard/start.sh --ensure-open
-- This ensures the FastAPI dashboard LaunchAgent is installed, waits for a healthy response from http://127.0.0.1:7777/api/health, repairs a cold-boot miss with one restart, and only then opens the browser
-- If start.sh outputs "READY", the browser tab was opened only after the dashboard became reachable
+- Use Bash (run in background): ~/.claude/eng-buddy/dashboard/start.sh --background
+- This ensures the FastAPI dashboard LaunchAgent is installed and either healthy or actively booting at http://127.0.0.1:7777
+- Then open it in the user's default browser:
+  - Use Bash: open http://127.0.0.1:7777
+- If start.sh outputs "ALREADY_RUNNING", just open browser tab
+- If start.sh outputs "STARTED", open browser tab
+- If start.sh outputs "STARTING", open browser tab and continue; the dashboard is still booting in the background
 - If start.sh outputs "TIMEOUT", warn the user: "Dashboard failed to start — check ~/.claude/eng-buddy/dashboard.log"
+- Tell the user: "Dashboard is live at http://127.0.0.1:7777"
 
 STEP 0.7: Start pollers (MUST DO ON EVERY INVOCATION)
 - Use Bash: bash ~/.claude/skills/eng-buddy/bin/start-pollers.sh
-- This syncs poller scripts to runtime, installs/reloads LaunchAgents, and kicks off an immediate refresh pass so the dashboard repaints with fresh Slack/Gmail/Calendar/Jira data even if a poller fired recently
+- This syncs poller scripts to runtime, installs/reloads LaunchAgents, and runs an initial poll
 - Pollers: Slack (5min), Gmail (10min), Calendar (30min), Jira (5min)
 - If output contains "POLLERS_OK", pollers are running
 - If any errors, warn user but continue (pollers are non-blocking)
-- Do not open the dashboard again here; Step 0.5 already waited for readiness and opened it safely
-- Tell the user: "Dashboard is live at http://127.0.0.1:7777"
 
 STEP 1: Check if workspace exists
 - Use Bash: ls -la ~/.claude/eng-buddy/ 2>/dev/null || echo "WORKSPACE_DOES_NOT_EXIST"
@@ -1311,6 +1314,65 @@ What do you want to tackle first?"
 - Recognize patterns and document in weekly summaries
 - Track recurring issues in knowledge files
 - Evolve understanding and keep infrastructure docs current
+
+### Playbook Engine
+
+eng-buddy can learn, store, and execute repeatable workflows called **playbooks**.
+
+#### How Playbooks Work
+
+**Observation**: As you work tickets, eng-buddy captures a full trace -- tool calls, your instructions, corrections, manual actions, decisions, and questions. This happens continuously via hooks.
+
+**Extraction**: When a ticket is completed or a pattern is detected, eng-buddy drafts a playbook with action-bound steps. Each step specifies which tool to use, what parameters to pass, and whether human involvement is needed.
+
+**Approval**: Draft playbooks appear on the dashboard (Playbooks tab) for your review. You can edit steps, approve, or reject.
+
+**Execution**: When a new ticket matches an approved playbook, the dashboard shows a "Ready to Execute" card with the pre-filled step list. Type your approval command and eng-buddy dispatches a Claude Code session in your terminal to execute it.
+
+#### Approval Commands
+
+- `approve all` -- execute every step
+- `approve all but #3, #5` -- skip specific steps
+- `approve all but ask me before sending slack messages` -- conditional pauses
+- `approve #1-#4, hold on #5 until I finish the manual config` -- partial execution
+
+#### Creating Playbooks
+
+Three paths:
+
+1. **Watch and Learn**: Work a ticket normally. eng-buddy drafts a playbook from your session.
+2. **Describe**: Say "Create a playbook for [task]. Steps: [1, 2, 3]." eng-buddy expands with tool bindings.
+3. **Pattern Detection**: eng-buddy analyzes traces and proposes playbooks for repeated workflows.
+
+#### Managing Playbooks
+
+- Dashboard Playbooks tab: review drafts, monitor executions, manage approved playbooks
+- CLI: `python3 ~/.claude/eng-buddy/bin/brain.py --playbook-list`
+- Session: "Run [playbook name] for [ticket]" to invoke manually
+
+#### Setting Active Trace
+
+When working a specific ticket, write the ticket ID to the active trace file:
+
+```bash
+echo "ITWORK2-1234" > ~/.claude/eng-buddy/.active-trace-id
+```
+
+eng-buddy hooks will automatically record tool calls against this trace. Clear it when done:
+
+```bash
+rm ~/.claude/eng-buddy/.active-trace-id
+```
+
+#### Tool Registry
+
+Playbook steps bind to tools via the registry at `~/.claude/eng-buddy/playbooks/tool-registry/`. Each tool has:
+
+- Type (MCP, browser, script, AI)
+- Auth requirements (persistent, per-domain, human handoff)
+- Per-action defaults (assignee, board, sprint, etc.)
+
+Defaults are modular -- one `.defaults.yml` file per tool, auto-discovered.
 
 ### Task State File Maintenance (CRITICAL)
 
