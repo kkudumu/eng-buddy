@@ -33,7 +33,8 @@ MEMORY_DIR = ENG_BUDDY_DIR / "memory"
 RUNTIME_DIR = ENG_BUDDY_DIR / ".runtime"
 CLAUDE_SYNC_FILE = RUNTIME_DIR / "claude-sync-events.txt"
 LAUNCHER_DIR = RUNTIME_DIR / "launchers"
-TERMINAL_APP = os.environ.get("ENG_BUDDY_TERMINAL", "Terminal")
+DEFAULT_TERMINAL_APP = os.environ.get("ENG_BUDDY_TERMINAL", "Terminal")
+TERMINAL_APP = DEFAULT_TERMINAL_APP
 JIRA_USER = os.environ.get("ENG_BUDDY_JIRA_USER", "kioja.kudumu@klaviyo.com")
 JIRA_BOARD_NAME = os.environ.get("ENG_BUDDY_JIRA_BOARD_NAME", "Systems")
 JIRA_PROJECT_KEY = os.environ.get("ENG_BUDDY_JIRA_PROJECT_KEY", "ITWORK2")
@@ -110,6 +111,51 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 def _escape_applescript_text(value: str) -> str:
     return str(value).replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ").replace("\r", " ")
+
+
+def _settings_file() -> Path:
+    return ENG_BUDDY_DIR / "dashboard-settings.json"
+
+
+def _default_settings() -> dict:
+    return {
+        "terminal": DEFAULT_TERMINAL_APP,
+        "macos_notifications": False,
+    }
+
+
+def _load_settings() -> dict:
+    settings = _default_settings()
+    path = _settings_file()
+    if not path.exists():
+        return settings
+
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return settings
+
+    if isinstance(loaded, dict):
+        terminal = loaded.get("terminal")
+        if isinstance(terminal, str) and terminal:
+            settings["terminal"] = terminal
+        settings["macos_notifications"] = bool(loaded.get("macos_notifications", False))
+    return settings
+
+
+def _save_settings(settings: dict) -> dict:
+    path = _settings_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    normalized = _default_settings()
+    normalized["terminal"] = settings.get("terminal", normalized["terminal"])
+    normalized["macos_notifications"] = bool(
+        settings.get("macos_notifications", normalized["macos_notifications"])
+    )
+    path.write_text(json.dumps(normalized, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return normalized
+
+
+TERMINAL_APP = _load_settings()["terminal"]
 
 
 def _claude_env():
@@ -219,6 +265,136 @@ def _card_analysis_metadata(card: dict):
     generated_from = meta.get("generated_from")
     meta["generated_from"] = generated_from if isinstance(generated_from, list) else []
     return meta
+
+
+def _card_actions(card: dict):
+    try:
+        actions = json.loads(card.get("proposed_actions") or "[]")
+    except (json.JSONDecodeError, TypeError):
+        actions = []
+    return actions if isinstance(actions, list) else []
+
+
+def _gmail_card_details(card: dict):
+    actions = _card_actions(card)
+    primary = next((action for action in actions if isinstance(action, dict)), {})
+    summary = str(card.get("summary", "")).strip()
+    sender = str(primary.get("to_email") or "").strip()
+    subject = str(primary.get("subject") or "").strip()
+
+    if ":" in summary:
+        summary_sender, summary_subject = summary.split(":", 1)
+        sender = sender or summary_sender.strip()
+        subject = subject or summary_subject.strip()
+    else:
+        sender = sender or summary
+
+    return {
+        "sender": sender,
+        "subject": subject,
+        "thread_id": str(primary.get("thread_id") or "").strip(),
+        "message_id": str(primary.get("message_id") or "").strip(),
+        "to_email": str(primary.get("to_email") or "").strip(),
+    }
+
+
+def _normalize_gmail_label(value: str):
+    cleaned = re.sub(r"\s+", " ", str(value or "").strip())
+    cleaned = cleaned.strip("-_/ ")
+    return cleaned[:40]
+
+
+def _normalize_gmail_analysis(raw_payload):
+    payload = raw_payload if isinstance(raw_payload, dict) else {}
+    category = str(payload.get("detected_category", "")).strip().lower().replace("_", "-")
+    if not category:
+        category = "needs-response"
+
+    labels = payload.get("suggested_labels") if isinstance(payload.get("suggested_labels"), list) else []
+    normalized_labels = []
+    seen = set()
+    for label in labels:
+        cleaned = _normalize_gmail_label(label)
+        if not cleaned:
+            continue
+        dedupe_key = cleaned.lower()
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        normalized_labels.append(cleaned)
+        if len(normalized_labels) >= 5:
+            break
+    if not normalized_labels and category:
+        normalized_labels = [category]
+
+    draft = str(payload.get("suggested_draft", "")).strip()
+    reasoning = str(payload.get("reasoning", "")).strip()
+    return {
+        "detected_category": category,
+        "suggested_labels": normalized_labels,
+        "suggested_draft": draft,
+        "reasoning": reasoning,
+    }
+
+
+def _persist_card_analysis(card_id: int, metadata: dict, draft_response: str | None = None):
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT analysis_metadata, draft_response FROM cards WHERE id = ?",
+            [card_id],
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "card not found")
+
+        merged = _parse_json_dict(row["analysis_metadata"], {})
+        merged.update(metadata)
+        if draft_response is None:
+            conn.execute(
+                "UPDATE cards SET analysis_metadata = ? WHERE id = ?",
+                [json.dumps(merged), card_id],
+            )
+        else:
+            conn.execute(
+                "UPDATE cards SET analysis_metadata = ?, draft_response = ? WHERE id = ?",
+                [json.dumps(merged), draft_response, card_id],
+            )
+        conn.commit()
+        return merged, (draft_response if draft_response is not None else row["draft_response"])
+    finally:
+        conn.close()
+
+
+def _build_gmail_analysis_prompt(card: dict, include_labels: bool = True, include_draft: bool = True):
+    details = _gmail_card_details(card)
+    existing_meta = _card_analysis_metadata(card)
+    existing_labels = existing_meta.get("gmail_suggested_labels", [])
+    current_draft = str(card.get("draft_response", "")).strip()
+    tasks = []
+    if include_labels:
+        tasks.append("Suggest a compact detected category and 1-4 Gmail label names.")
+    if include_draft:
+        tasks.append("Suggest a short reply draft only if a reply would be useful.")
+    task_text = " ".join(tasks) or "Review the email."
+    return (
+        "You are triaging a Gmail inbox card for eng-buddy.\n"
+        f"{task_text}\n\n"
+        f"Summary: {card.get('summary', '')}\n"
+        f"Context notes: {card.get('context_notes', '')}\n"
+        f"Current classification: {card.get('classification', '')}\n"
+        f"Sender: {details['sender']}\n"
+        f"Subject: {details['subject']}\n"
+        f"Existing draft: {current_draft or '(none)'}\n"
+        f"Existing suggested labels: {json.dumps(existing_labels)}\n\n"
+        "Return ONLY JSON with this shape:\n"
+        "{\n"
+        '  "detected_category": "needs-response|fyi|ops|finance|sales|recruiting|bulk|personal",\n'
+        '  "suggested_labels": ["label-one", "label-two"],\n'
+        '  "suggested_draft": "optional reply draft",\n'
+        '  "reasoning": "one short sentence"\n'
+        "}\n"
+        "Keep labels concise and human-readable. Use an empty string for suggested_draft if no reply is needed."
+    )
 
 
 def _compute_suggestion_fingerprint(category: str, title: str):
@@ -1503,11 +1679,13 @@ async def get_knowledge_doc(path: str):
     }
 
 @app.get("/api/cards")
-async def get_cards(source: str = None, status: str = "pending", section: str = None):
+async def get_cards(source: str = None, status: str | None = None, section: str = None):
     conn = get_db()
     try:
         query = "SELECT * FROM cards WHERE 1=1"
         params = []
+        if status is None:
+            status = "all" if source == "calendar" else "pending"
         if status != "all":
             query += " AND status = ?"
             params.append(status)
@@ -2936,6 +3114,218 @@ async def send_email_draft(card_id: int, body: dict = Body(default={})):
     }
 
 
+@app.post("/api/cards/{card_id}/gmail-analyze")
+async def analyze_gmail_card(card_id: int, body: dict = Body(default={})):
+    """Generate Gmail-specific category, label, and draft suggestions."""
+    conn = get_db()
+    try:
+        row = conn.execute("SELECT * FROM cards WHERE id = ?", [card_id]).fetchone()
+        if not row:
+            raise HTTPException(404, "card not found")
+        card = dict(row)
+    finally:
+        conn.close()
+
+    include_labels = bool(body.get("include_labels", True))
+    include_draft = bool(body.get("include_draft", True))
+    replace_draft = bool(body.get("replace_draft", False))
+
+    prompt = _build_gmail_analysis_prompt(card, include_labels=include_labels, include_draft=include_draft)
+    result = _run_claude_print(prompt, timeout=60)
+    if result.returncode != 0:
+        raise HTTPException(502, f"Gmail analysis failed: {result.stderr[:200]}")
+
+    parsed = _extract_balanced_json(result.stdout.strip(), "{")
+    normalized = _normalize_gmail_analysis(parsed)
+    metadata = _card_analysis_metadata(card)
+
+    if not include_labels:
+        normalized["suggested_labels"] = metadata.get("gmail_suggested_labels", [])
+        normalized["detected_category"] = metadata.get("gmail_detected_category", normalized["detected_category"])
+        normalized["reasoning"] = normalized["reasoning"] or str(metadata.get("gmail_label_reasoning", "")).strip()
+    if not include_draft:
+        normalized["suggested_draft"] = str(card.get("draft_response", "")).strip()
+
+    new_metadata = {
+        "gmail_detected_category": normalized["detected_category"],
+        "gmail_suggested_labels": normalized["suggested_labels"],
+        "gmail_label_reasoning": normalized["reasoning"],
+        "gmail_last_analyzed_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    existing_draft = str(card.get("draft_response", "")).strip()
+    draft_to_store = None
+    if include_draft and normalized["suggested_draft"]:
+        if replace_draft or not existing_draft:
+            draft_to_store = normalized["suggested_draft"]
+        else:
+            normalized["suggested_draft"] = existing_draft
+    else:
+        normalized["suggested_draft"] = existing_draft
+
+    persisted_meta, persisted_draft = _persist_card_analysis(card_id, new_metadata, draft_response=draft_to_store)
+    return {
+        "card_id": card_id,
+        "detected_category": persisted_meta.get("gmail_detected_category", normalized["detected_category"]),
+        "suggested_labels": persisted_meta.get("gmail_suggested_labels", normalized["suggested_labels"]),
+        "reasoning": persisted_meta.get("gmail_label_reasoning", normalized["reasoning"]),
+        "draft_response": persisted_draft or "",
+    }
+
+
+@app.post("/api/cards/{card_id}/gmail-auto-label")
+async def auto_label_gmail_card(card_id: int, body: dict = Body(default={})):
+    """Use Gmail MCP to create/apply suggested labels to the email."""
+    conn = get_db()
+    try:
+        row = conn.execute("SELECT * FROM cards WHERE id = ?", [card_id]).fetchone()
+        if not row:
+            raise HTTPException(404, "card not found")
+        card = dict(row)
+    finally:
+        conn.close()
+
+    decision_event_id = int(body.get("decision_event_id") or 0)
+    action_step_id = _require_approved_decision("card", str(card_id), "gmail-auto-label", decision_event_id)
+    attempt_id = _start_execution_attempt(
+        "card",
+        str(card_id),
+        "gmail-auto-label",
+        action_step_id=action_step_id,
+        metadata={"card_id": card_id, "source": "gmail"},
+    )
+
+    meta = _card_analysis_metadata(card)
+    labels = meta.get("gmail_suggested_labels", [])
+    if not labels:
+        prompt = _build_gmail_analysis_prompt(card, include_labels=True, include_draft=False)
+        analysis_result = _run_claude_print(prompt, timeout=60)
+        if analysis_result.returncode != 0:
+            _mark_action_step_status(action_step_id, "failed")
+            _finish_execution_attempt(attempt_id, "failed", error=analysis_result.stderr[:500])
+            raise HTTPException(502, f"Gmail analysis failed: {analysis_result.stderr[:200]}")
+        parsed = _extract_balanced_json(analysis_result.stdout.strip(), "{")
+        analysis = _normalize_gmail_analysis(parsed)
+        labels = analysis["suggested_labels"]
+        meta, _ = _persist_card_analysis(
+            card_id,
+            {
+                "gmail_detected_category": analysis["detected_category"],
+                "gmail_suggested_labels": labels,
+                "gmail_label_reasoning": analysis["reasoning"],
+                "gmail_last_analyzed_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+
+    details = _gmail_card_details(card)
+    label_json = json.dumps(labels)
+    search_query = f'from:{details["to_email"] or details["sender"]} subject:"{details["subject"]}" newer_than:30d'
+    prompt = (
+        "Use the Gmail MCP to create and apply Gmail labels to a message.\n"
+        f"Labels to apply: {label_json}\n"
+        f"Sender: {details['sender']}\n"
+        f"Subject: {details['subject']}\n"
+        f"Known message_id: {details['message_id'] or '(none)'}\n"
+        f"Known thread_id: {details['thread_id'] or '(none)'}\n\n"
+        "Steps:\n"
+        "1. Call get_or_create_label for each label and collect the label IDs.\n"
+        "2. If message_id is available, call modify_email on that message_id with addLabelIds set to those IDs.\n"
+        f"3. Otherwise, call search_emails with query {json.dumps(search_query)} and pick the most relevant recent message.\n"
+        "4. Call modify_email on the chosen message_id with addLabelIds set to those IDs.\n"
+        'Return ONLY JSON: {"status":"labeled","labels":["..."],"message_id":"..."}'
+    )
+    result = _run_claude_print(prompt, timeout=60)
+    if result.returncode != 0:
+        _mark_action_step_status(action_step_id, "failed")
+        _finish_execution_attempt(attempt_id, "failed", error=result.stderr[:500])
+        raise HTTPException(502, f"Gmail auto-label failed: {result.stderr[:200]}")
+
+    parsed = _extract_balanced_json(result.stdout.strip(), "{")
+    payload = parsed if isinstance(parsed, dict) else {"status": "unknown", "raw": result.stdout[:500]}
+    applied_labels = payload.get("labels") if isinstance(payload.get("labels"), list) else labels
+    _persist_card_analysis(
+        card_id,
+        {
+            "gmail_applied_labels": applied_labels,
+            "gmail_last_labeled_at": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+
+    _record_stat("gmail_labels_applied")
+    _mark_action_step_status(action_step_id, "executed", payload=payload)
+    _finish_execution_attempt(attempt_id, "completed", output=json.dumps(payload))
+    return {
+        "card_id": card_id,
+        "status": payload.get("status", "labeled"),
+        "labels": applied_labels,
+        "decision_event_id": decision_event_id,
+        "action_step_id": action_step_id,
+    }
+
+
+@app.post("/api/cards/{card_id}/archive-email")
+async def archive_gmail_card(card_id: int, body: dict = Body(default={})):
+    """Archive a Gmail card by removing the INBOX label on the matching message."""
+    conn = get_db()
+    try:
+        row = conn.execute("SELECT * FROM cards WHERE id = ?", [card_id]).fetchone()
+        if not row:
+            raise HTTPException(404, "card not found")
+        card = dict(row)
+    finally:
+        conn.close()
+
+    decision_event_id = int(body.get("decision_event_id") or 0)
+    action_step_id = _require_approved_decision("card", str(card_id), "archive-email", decision_event_id)
+    attempt_id = _start_execution_attempt(
+        "card",
+        str(card_id),
+        "archive-email",
+        action_step_id=action_step_id,
+        metadata={"card_id": card_id, "source": "gmail"},
+    )
+
+    details = _gmail_card_details(card)
+    search_query = f'from:{details["to_email"] or details["sender"]} subject:"{details["subject"]}" newer_than:30d'
+    prompt = (
+        "Use the Gmail MCP to archive an email by removing the INBOX label.\n"
+        f"Sender: {details['sender']}\n"
+        f"Subject: {details['subject']}\n"
+        f"Known message_id: {details['message_id'] or '(none)'}\n"
+        f"Known thread_id: {details['thread_id'] or '(none)'}\n\n"
+        "If message_id is available, call modify_email with removeLabelIds ['INBOX'].\n"
+        f"Otherwise, call search_emails with query {json.dumps(search_query)}, choose the best recent match, and archive that message.\n"
+        'Return ONLY JSON: {"status":"archived","message_id":"..."}'
+    )
+    result = _run_claude_print(prompt, timeout=45)
+    if result.returncode != 0:
+        _mark_action_step_status(action_step_id, "failed")
+        _finish_execution_attempt(attempt_id, "failed", error=result.stderr[:500])
+        raise HTTPException(502, f"Gmail archive failed: {result.stderr[:200]}")
+
+    conn = get_db()
+    try:
+        conn.execute(
+            "UPDATE cards SET status = 'completed', section = 'no-action' WHERE id = ?",
+            [card_id],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    parsed = _extract_balanced_json(result.stdout.strip(), "{")
+    payload = parsed if isinstance(parsed, dict) else {"status": "archived", "raw": result.stdout[:500]}
+    _record_stat("gmail_archived")
+    _mark_action_step_status(action_step_id, "executed", payload=payload)
+    _finish_execution_attempt(attempt_id, "completed", output=json.dumps(payload))
+    return {
+        "card_id": card_id,
+        "status": payload.get("status", "archived"),
+        "decision_event_id": decision_event_id,
+        "action_step_id": action_step_id,
+    }
+
+
 async def card_event_generator():
     """Yield new cards as SSE events with optional source cache invalidation."""
     conn = get_db()
@@ -3307,17 +3697,24 @@ async def ingest_chat_session_transcript(session_id: int, body: dict = Body(...)
 @app.get("/api/settings")
 async def get_settings():
     global TERMINAL_APP
-    return {"terminal": TERMINAL_APP}
+    settings = _load_settings()
+    TERMINAL_APP = settings["terminal"]
+    return settings
 
 @app.post("/api/settings")
 async def update_settings(body: dict):
     global TERMINAL_APP
+    settings = _load_settings()
     if "terminal" in body:
         allowed = {"Terminal", "Warp", "iTerm", "Alacritty", "kitty"}
         if body["terminal"] not in allowed:
             raise HTTPException(400, f"terminal must be one of {allowed}")
-        TERMINAL_APP = body["terminal"]
-    return {"terminal": TERMINAL_APP}
+        settings["terminal"] = body["terminal"]
+    if "macos_notifications" in body:
+        settings["macos_notifications"] = bool(body["macos_notifications"])
+    settings = _save_settings(settings)
+    TERMINAL_APP = settings["terminal"]
+    return settings
 
 
 def _launch_terminal_session(
@@ -3530,11 +3927,14 @@ async def jira_sprint(refresh: bool = False):
 
 @app.post("/api/notify")
 async def notify(body: dict):
+    settings = _load_settings()
+    if not settings.get("macos_notifications", False):
+        return {"ok": True, "notified": False, "reason": "disabled"}
     msg = _escape_applescript_text(body.get("message", "")[:100])
     title = _escape_applescript_text(body.get("title", "eng-buddy"))
     script = f'display notification "{msg}" with title "{title}" sound name "Glass"'
     subprocess.Popen(["osascript", "-e", script])
-    return {"ok": True}
+    return {"ok": True, "notified": True}
 
 
 @app.post("/api/cache-invalidate")

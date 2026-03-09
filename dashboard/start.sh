@@ -169,7 +169,9 @@ wait_for_health() {
   return 1
 }
 
-start_agent() {
+start_agent_impl() {
+  local timeout_seconds="${1:-45}"
+  local pending_status="${2:-TIMEOUT}"
   local plist_changed=0
 
   export_runtime_env
@@ -197,13 +199,27 @@ start_agent() {
     bootstrap_agent
   fi
 
-  if wait_for_health 45; then
+  if wait_for_health "$timeout_seconds"; then
     echo "STARTED"
+    return 0
+  fi
+
+  if [[ -n "$pending_status" ]] && is_loaded; then
+    echo "$pending_status"
     return 0
   fi
 
   echo "TIMEOUT"
   return 1
+}
+
+start_agent() {
+  start_agent_impl 45 TIMEOUT
+}
+
+start_agent_background() {
+  # Keep background startup non-blocking so cold boots do not stall /eng-buddy.
+  start_agent_impl 3 STARTING
 }
 
 restart_agent() {
@@ -270,7 +286,7 @@ serve_foreground() {
 
 case "${1:-}" in
   --background)
-    start_agent
+    start_agent_background
     ;;
   --restart)
     restart_agent

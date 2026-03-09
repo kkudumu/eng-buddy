@@ -30,6 +30,8 @@ cd ~/.claude/eng-buddy/dashboard
 /eng-buddy
 ```
 
+`--background` returns quickly. It prints `ALREADY_RUNNING`, `STARTED`, or `STARTING` for a healthy or booting dashboard, and only prints `TIMEOUT` when launchd could not get the service off the ground.
+
 The dashboard auto-creates a Python venv and installs dependencies on first run.
 
 ## Architecture

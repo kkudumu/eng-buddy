@@ -7,6 +7,8 @@ cd ~/.claude/eng-buddy/dashboard
 ./start.sh --background
 ```
 
+`--background` is intentionally non-blocking for cold starts. Expect `ALREADY_RUNNING`, `STARTED`, or `STARTING` while the LaunchAgent finishes bringing up the dashboard.
+
 Managed by `launchd` and served at http://127.0.0.1:7777
 
 ## Background pollers (LaunchAgents)

@@ -42,6 +42,84 @@ async def test_restart_uses_launchd_managed_start_script(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_settings_defaults_disable_macos_notifications(tmp_path, monkeypatch):
+    monkeypatch.setattr(server, "ENG_BUDDY_DIR", tmp_path)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r = await client.get("/api/settings")
+
+    assert r.status_code == 200
+    assert r.json() == {
+        "terminal": server.DEFAULT_TERMINAL_APP,
+        "macos_notifications": False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_update_settings_persists_notification_preference(tmp_path, monkeypatch):
+    monkeypatch.setattr(server, "ENG_BUDDY_DIR", tmp_path)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r = await client.post(
+            "/api/settings",
+            json={"terminal": "Warp", "macos_notifications": True},
+        )
+
+    assert r.status_code == 200
+    assert r.json() == {"terminal": "Warp", "macos_notifications": True}
+    settings_file = tmp_path / "dashboard-settings.json"
+    assert json.loads(settings_file.read_text(encoding="utf-8")) == {
+        "terminal": "Warp",
+        "macos_notifications": True,
+    }
+
+
+@pytest.mark.asyncio
+async def test_notify_is_noop_when_macos_notifications_disabled(tmp_path, monkeypatch):
+    monkeypatch.setattr(server, "ENG_BUDDY_DIR", tmp_path)
+    called = False
+
+    def fake_popen(*args, **kwargs):
+        nonlocal called
+        called = True
+        return object()
+
+    monkeypatch.setattr(server.subprocess, "Popen", fake_popen)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r = await client.post("/api/notify", json={"title": "eng-buddy", "message": "hello"})
+
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "notified": False, "reason": "disabled"}
+    assert called is False
+
+
+@pytest.mark.asyncio
+async def test_notify_calls_osascript_when_enabled(tmp_path, monkeypatch):
+    monkeypatch.setattr(server, "ENG_BUDDY_DIR", tmp_path)
+    (tmp_path / "dashboard-settings.json").write_text(
+        json.dumps({"terminal": "Terminal", "macos_notifications": True}),
+        encoding="utf-8",
+    )
+    captured = {}
+
+    def fake_popen(args):
+        captured["args"] = args
+        return object()
+
+    monkeypatch.setattr(server.subprocess, "Popen", fake_popen)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r = await client.post("/api/notify", json={"title": "eng-buddy", "message": "hello"})
+
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "notified": True}
+    assert captured["args"][0] == "osascript"
+    assert captured["args"][1] == "-e"
+    assert 'display notification "hello"' in captured["args"][2]
+
+
+@pytest.mark.asyncio
 async def test_send_debug_log_to_claude_queues_sync_event(tmp_path, monkeypatch):
     sync_file = tmp_path / ".runtime" / "claude-sync-events.txt"
     monkeypatch.setattr(server, "CLAUDE_SYNC_FILE", sync_file)
@@ -111,6 +189,47 @@ async def test_get_cards_returns_list():
     data = r.json()
     assert "cards" in data
     assert isinstance(data["cards"], list)
+
+@pytest.mark.asyncio
+async def test_get_cards_calendar_defaults_to_all_statuses(tmp_path, monkeypatch):
+    db_path = tmp_path / "inbox.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """CREATE TABLE cards (
+            id INTEGER PRIMARY KEY,
+            source TEXT,
+            timestamp TEXT,
+            summary TEXT,
+            classification TEXT,
+            status TEXT,
+            proposed_actions TEXT,
+            section TEXT,
+            draft_response TEXT,
+            context_notes TEXT,
+            responded INTEGER
+        )"""
+    )
+    conn.execute(
+        """INSERT INTO cards
+           (id, source, timestamp, summary, classification, status, proposed_actions, section, responded)
+           VALUES (1, 'calendar', '2026-03-09T14:30:00+00:00', 'Held meeting', 'normal', 'held', '[]', 'needs-action', 0)"""
+    )
+    conn.execute(
+        """INSERT INTO cards
+           (id, source, timestamp, summary, classification, status, proposed_actions, section, responded)
+           VALUES (2, 'calendar', '2026-03-09T15:30:00+00:00', 'Pending meeting', 'normal', 'pending', '[]', 'needs-action', 0)"""
+    )
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr(server, "DB_PATH", db_path)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r = await client.get("/api/cards", params={"source": "calendar"})
+
+    assert r.status_code == 200
+    cards = r.json()["cards"]
+    assert [card["summary"] for card in cards] == ["Pending meeting", "Held meeting"]
 
 @pytest.mark.asyncio
 async def test_card_has_required_fields():
@@ -546,6 +665,208 @@ async def test_open_session_creates_chat_session(tmp_path, monkeypatch):
     payload = r.json()
     assert payload["chat_session_id"] == 1
     assert payload["launcher"] == "/tmp/fake-launcher.sh"
+
+
+@pytest.mark.asyncio
+async def test_gmail_analyze_persists_detected_labels_and_draft(tmp_path, monkeypatch):
+    db_path = tmp_path / "inbox.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """CREATE TABLE cards (
+            id INTEGER PRIMARY KEY,
+            source TEXT,
+            summary TEXT,
+            classification TEXT,
+            context_notes TEXT,
+            draft_response TEXT,
+            proposed_actions TEXT,
+            analysis_metadata TEXT
+        )"""
+    )
+    conn.execute(
+        """INSERT INTO cards
+           (id, source, summary, classification, context_notes, draft_response, proposed_actions, analysis_metadata)
+           VALUES (
+             11,
+             'gmail',
+             'ceo@example.com: Need rollout status',
+             'needs-response',
+             'Executive follow-up',
+             '',
+             ?,
+             '{}'
+           )""",
+        [json.dumps([{"to_email": "ceo@example.com", "subject": "Need rollout status", "thread_id": "t-1"}])],
+    )
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr(server, "DB_PATH", db_path)
+    monkeypatch.setattr(
+        server,
+        "_run_claude_print",
+        lambda prompt, timeout=60: subprocess.CompletedProcess(
+            args=["claude"],
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "detected_category": "ops",
+                    "suggested_labels": ["Leadership", "Rollout"],
+                    "suggested_draft": "We are on track and I will send a fuller update by 3pm.",
+                    "reasoning": "Leadership follow-up on an ongoing rollout.",
+                }
+            ),
+            stderr="",
+        ),
+    )
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r = await client.post("/api/cards/11/gmail-analyze", json={"include_labels": True, "include_draft": True})
+
+    assert r.status_code == 200
+    payload = r.json()
+    assert payload["detected_category"] == "ops"
+    assert payload["suggested_labels"] == ["Leadership", "Rollout"]
+    assert "on track" in payload["draft_response"]
+
+    check = sqlite3.connect(db_path)
+    row = check.execute(
+        "SELECT draft_response, analysis_metadata FROM cards WHERE id = 11"
+    ).fetchone()
+    check.close()
+    meta = json.loads(row[1])
+    assert "on track" in row[0]
+    assert meta["gmail_detected_category"] == "ops"
+    assert meta["gmail_suggested_labels"] == ["Leadership", "Rollout"]
+
+
+@pytest.mark.asyncio
+async def test_gmail_auto_label_requires_decision_and_records_labels(tmp_path, monkeypatch):
+    db_path = tmp_path / "inbox.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """CREATE TABLE cards (
+            id INTEGER PRIMARY KEY,
+            source TEXT,
+            summary TEXT,
+            draft_response TEXT,
+            proposed_actions TEXT,
+            analysis_metadata TEXT
+        )"""
+    )
+    conn.execute(
+        """INSERT INTO cards
+           (id, source, summary, draft_response, proposed_actions, analysis_metadata)
+           VALUES (
+             12,
+             'gmail',
+             'alerts@example.com: Billing alert',
+             '',
+             ?,
+             ?
+           )""",
+        [
+            json.dumps([{"message_id": "msg-12", "to_email": "alerts@example.com", "subject": "Billing alert"}]),
+            json.dumps({"gmail_suggested_labels": ["Finance", "Urgent"]}),
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr(server, "DB_PATH", db_path)
+    monkeypatch.setattr(
+        server,
+        "_run_claude_print",
+        lambda prompt, timeout=60: subprocess.CompletedProcess(
+            args=["claude"],
+            returncode=0,
+            stdout=json.dumps({"status": "labeled", "labels": ["Finance", "Urgent"], "message_id": "msg-12"}),
+            stderr="",
+        ),
+    )
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        blocked = await client.post("/api/cards/12/gmail-auto-label", json={})
+        assert blocked.status_code == 400
+
+        decision = await client.post(
+            "/api/cards/12/decision",
+            json={"action": "gmail-auto-label", "decision": "approved", "rationale": "apply the triage labels"},
+        )
+        assert decision.status_code == 200
+
+        ok = await client.post(
+            "/api/cards/12/gmail-auto-label",
+            json={"decision_event_id": decision.json()["decision_event_id"]},
+        )
+
+    assert ok.status_code == 200
+    assert ok.json()["labels"] == ["Finance", "Urgent"]
+
+    check = sqlite3.connect(db_path)
+    meta = json.loads(check.execute("SELECT analysis_metadata FROM cards WHERE id = 12").fetchone()[0])
+    check.close()
+    assert meta["gmail_applied_labels"] == ["Finance", "Urgent"]
+
+
+@pytest.mark.asyncio
+async def test_archive_email_requires_decision_and_moves_card_to_no_action(tmp_path, monkeypatch):
+    db_path = tmp_path / "inbox.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """CREATE TABLE cards (
+            id INTEGER PRIMARY KEY,
+            source TEXT,
+            summary TEXT,
+            status TEXT,
+            section TEXT,
+            proposed_actions TEXT
+        )"""
+    )
+    conn.execute(
+        """INSERT INTO cards
+           (id, source, summary, status, section, proposed_actions)
+           VALUES (13, 'gmail', 'updates@example.com: Weekly digest', 'pending', 'needs-action', ?)""",
+        [json.dumps([{"message_id": "msg-13", "to_email": "updates@example.com", "subject": "Weekly digest"}])],
+    )
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr(server, "DB_PATH", db_path)
+    monkeypatch.setattr(
+        server,
+        "_run_claude_print",
+        lambda prompt, timeout=45: subprocess.CompletedProcess(
+            args=["claude"],
+            returncode=0,
+            stdout=json.dumps({"status": "archived", "message_id": "msg-13"}),
+            stderr="",
+        ),
+    )
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        blocked = await client.post("/api/cards/13/archive-email", json={})
+        assert blocked.status_code == 400
+
+        decision = await client.post(
+            "/api/cards/13/decision",
+            json={"action": "archive-email", "decision": "approved", "rationale": "clear the inbox"},
+        )
+        assert decision.status_code == 200
+
+        ok = await client.post(
+            "/api/cards/13/archive-email",
+            json={"decision_event_id": decision.json()["decision_event_id"]},
+        )
+
+    assert ok.status_code == 200
+    assert ok.json()["status"] == "archived"
+
+    check = sqlite3.connect(db_path)
+    status, section = check.execute("SELECT status, section FROM cards WHERE id = 13").fetchone()
+    check.close()
+    assert status == "completed"
+    assert section == "no-action"
 
 
 @pytest.mark.asyncio

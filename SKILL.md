@@ -24,11 +24,12 @@ STEP 0: Install/sync hooks, then activate auto-logging (MUST DO FIRST)
 
 STEP 0.5: Launch dashboard (MUST DO ON EVERY INVOCATION)
 - Use Bash (run in background): ~/.claude/eng-buddy/dashboard/start.sh --background
-- This ensures the FastAPI dashboard LaunchAgent is installed and healthy at http://127.0.0.1:7777
+- This ensures the FastAPI dashboard LaunchAgent is installed and either healthy or actively booting at http://127.0.0.1:7777
 - Then open it in the user's default browser:
   - Use Bash: open http://127.0.0.1:7777
 - If start.sh outputs "ALREADY_RUNNING", just open browser tab
 - If start.sh outputs "STARTED", open browser tab
+- If start.sh outputs "STARTING", open browser tab and continue; the dashboard is still booting in the background
 - If start.sh outputs "TIMEOUT", warn the user: "Dashboard failed to start — check ~/.claude/eng-buddy/dashboard.log"
 - Tell the user: "Dashboard is live at http://127.0.0.1:7777"
 

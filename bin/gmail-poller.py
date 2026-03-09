@@ -31,6 +31,7 @@ OAUTH_FILE = Path.home() / ".gmail-mcp" / "gcp-oauth.keys.json"
 BASE_DIR   = Path.home() / ".claude" / "eng-buddy"
 STATE_FILE = BASE_DIR / "gmail-poller-state.json"
 DB_PATH    = BASE_DIR / "inbox.db"
+SETTINGS_FILE = BASE_DIR / "dashboard-settings.json"
 TOKEN_URL  = "https://oauth2.googleapis.com/token"
 GMAIL_BASE = "https://gmail.googleapis.com/gmail/v1/users/me"
 
@@ -165,8 +166,20 @@ def append_to_daily_log(content):
 # Notifications
 # ---------------------------------------------------------------------------
 
+def macos_notifications_enabled():
+    if not SETTINGS_FILE.exists():
+        return False
+    try:
+        settings = json.loads(SETTINGS_FILE.read_text())
+    except (OSError, json.JSONDecodeError):
+        return False
+    return bool(settings.get("macos_notifications", False))
+
+
 def notify(title, message):
     """Fire a banner notification and a persistent alert dialog."""
+    if not macos_notifications_enabled():
+        return
     safe_title = str(title).replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ").replace("\r", " ")
     safe_message = str(message).replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ").replace("\r", " ")
     banner_script = f'display notification "{safe_message}" with title "{safe_title}" sound name "Glass"'
@@ -240,6 +253,7 @@ def write_card_to_db(conn, item, classification_result):
         "type":      "reply_to_email",
         "draft":     draft_response or f"Review and respond to email from {item['from']}: {item['subject']}",
         "source":    "gmail",
+        "message_id": item.get("id", ""),
         "thread_id": item.get("thread_id", ""),
         "to_email":  item.get("sender_email", ""),
         "subject":   item.get("subject", ""),

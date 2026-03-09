@@ -64,6 +64,7 @@ body {
 
 #header-settings { display: flex; align-items: center; gap: 8px; }
 .terminal-label { font-size: 10px; font-weight: 700; letter-spacing: 2px; color: var(--muted); }
+.toggle-label { font-size: 10px; font-weight: 700; letter-spacing: 2px; color: var(--muted); }
 .terminal-select {
   background: var(--card-bg);
   color: var(--text);
@@ -75,6 +76,12 @@ body {
   cursor: pointer;
 }
 .terminal-select:focus { outline: none; border-color: var(--fresh); }
+.toggle-checkbox {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--fresh);
+  cursor: pointer;
+}
 
 .count-badge {
   padding: 4px 10px;

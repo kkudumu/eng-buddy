@@ -31,6 +31,10 @@ const debugDrawerState = {
   maxEntries: 150,
   nextId: 1,
 };
+const dashboardSettings = {
+  terminal: 'Terminal',
+  macosNotifications: false,
+};
 
 // -- Helpers ------------------------------------------------------------------
 
@@ -627,6 +631,37 @@ function renderSuggestionCard(card) {
 
 // -- Smart Card rendering (for two-section views) ----------------------------
 
+function renderGmailInsights(card) {
+  const meta = card.analysis_metadata || {};
+  const detectedCategory = meta.gmail_detected_category || '';
+  const suggestedLabels = Array.isArray(meta.gmail_suggested_labels) ? meta.gmail_suggested_labels : [];
+  const appliedLabels = Array.isArray(meta.gmail_applied_labels) ? meta.gmail_applied_labels : [];
+  const reasoning = meta.gmail_label_reasoning || '';
+
+  if (!detectedCategory && !suggestedLabels.length && !appliedLabels.length && !reasoning) {
+    return '';
+  }
+
+  const suggestedHtml = suggestedLabels.length
+    ? suggestedLabels.map((label) => `<span class="badge cls-informational">${escHtml(label)}</span>`).join('')
+    : '<span class="badge cls-informational">No suggested labels yet</span>';
+  const appliedHtml = appliedLabels.length
+    ? appliedLabels.map((label) => `<span class="badge cls-needs-response">${escHtml(label)}</span>`).join('')
+    : '';
+  const categoryHtml = detectedCategory
+    ? `<span class="badge cls-needs-response">${escHtml(detectedCategory).toUpperCase().replace(/-/g, ' ')}</span>`
+    : '';
+
+  return `
+    <div class="card-context">
+      ${categoryHtml || '<span class="badge cls-informational">CATEGORY PENDING</span>'}
+      ${suggestedHtml}
+      ${appliedHtml}
+    </div>
+    ${reasoning ? `<div class="card-context">${escHtml(reasoning)}</div>` : ''}
+  `;
+}
+
 function renderSmartCard(card, source) {
   const draft = card.draft_response ? escHtml(card.draft_response) : '';
   const context = card.context_notes ? escHtml(card.context_notes) : '';
@@ -635,6 +670,52 @@ function renderSmartCard(card, source) {
   const isGmail = source === 'gmail';
 
   let buttons = '';
+  if (isGmail) {
+    if (hasDraft) {
+      buttons += `<button class="action-btn approve" onclick="sendDraft(${card.id}, 'email')">SEND DRAFT</button>`;
+    } else {
+      buttons += `<button class="action-btn approve" onclick="suggestGmailDraft(${card.id}, this)">SUGGEST DRAFT</button>`;
+    }
+    buttons += `<button class="action-btn" onclick="detectGmailLabels(${card.id}, this)">SUGGEST LABELS</button>`;
+    buttons += `<button class="action-btn" onclick="autoLabelGmail(${card.id}, this)">AUTO LABEL</button>`;
+    buttons += `<button class="action-btn hold" onclick="archiveGmailCard(${card.id}, this)">ARCHIVE</button>`;
+    buttons += `<button class="action-btn open-session" onclick="openSession(${card.id})">OPEN SESSION</button>`;
+    buttons += `<button class="action-btn refine" onclick="toggleRefine(${card.id})">REFINE</button>`;
+
+    return `
+  <div class="card smart-card ${card.section === 'needs-action' || card.section === 'action-needed' ? 'needs-action' : ''}"
+       id="card-${card.id}" data-source="${card.source}" data-id="${card.id}">
+    <div class="card-header" onclick="toggleFoldout(${card.id})">
+      <div class="card-meta">
+        ${sourceBadge(card.source)}
+        ${classBadge(card.classification)}
+      </div>
+      <div class="card-summary">${escHtml(card.summary || '(no summary)')}</div>
+      <div class="card-time">${timeAgo(card.timestamp)}</div>
+      <div class="card-toggle" id="toggle-${card.id}">&#9660;</div>
+    </div>
+    ${context ? `<div class="card-context">${context}</div>` : ''}
+    ${renderGmailInsights(card)}
+    ${draft ? `<div class="card-draft"><span class="draft-label">DRAFT:</span> ${draft}</div>` : ''}
+    <div class="card-actions">${buttons}</div>
+    <div class="card-foldout" id="foldout-${card.id}">
+      <div id="refine-${card.id}" style="display:none; margin-top:16px;">
+        <div class="refine-panel">
+          <div class="proposed-actions"><h4>Refine</h4></div>
+          <div class="refine-history" id="refine-history-${card.id}"></div>
+          <div class="refine-input-row">
+            <textarea class="refine-input" id="refine-input-${card.id}"
+              placeholder="e.g. tighten the reply and make the labels more specific..."
+              onkeydown="handleRefineKey(event, ${card.id})"></textarea>
+            <button class="action-btn" onclick="sendRefine(${card.id})">SEND</button>
+          </div>
+        </div>
+      </div>
+      <div id="xterm-${card.id}" class="xterm-container" style="display:none;"></div>
+    </div>
+  </div>`;
+  }
+
   if (hasDraft && isSlack) {
     buttons += `<button class="action-btn approve" onclick="sendDraft(${card.id}, 'slack')">SEND DRAFT</button>`;
   }
@@ -928,6 +1009,121 @@ async function dismissFilter(suggestionId, permanent) {
   });
   invalidateTabCache();
   loadTwoSectionView('gmail', { forceRefresh: true });
+}
+
+async function detectGmailLabels(id, btn) {
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'ANALYZING...';
+  }
+  try {
+    const r = await fetch(`/api/cards/${id}/gmail-analyze`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ include_labels: true, include_draft: false }),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail || 'Label detection failed');
+    invalidateTabCache();
+    await loadTwoSectionView('gmail', { forceRefresh: true });
+  } catch (e) {
+    await captureFailureFeedback('card', id, 'gmail-analyze', e.message);
+    alert(`Card #${id}: ${e.message}`);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = 'SUGGEST LABELS';
+    }
+  }
+}
+
+async function suggestGmailDraft(id, btn) {
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'DRAFTING...';
+  }
+  try {
+    const r = await fetch(`/api/cards/${id}/gmail-analyze`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ include_labels: false, include_draft: true }),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail || 'Draft suggestion failed');
+    invalidateTabCache();
+    await loadTwoSectionView('gmail', { forceRefresh: true });
+  } catch (e) {
+    await captureFailureFeedback('card', id, 'gmail-draft', e.message);
+    alert(`Card #${id}: ${e.message}`);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = 'SUGGEST DRAFT';
+    }
+  }
+}
+
+async function autoLabelGmail(id, btn) {
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'LABELING...';
+  }
+  try {
+    const rationale = window.prompt('Approval note for auto-labeling this email (optional):', '') || '';
+    const decision = await requestDecision('card', id, 'gmail-auto-label', 'approved', rationale);
+    const r = await fetch(`/api/cards/${id}/gmail-auto-label`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision_event_id: decision.decision_event_id }),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail || 'Auto-label failed');
+    invalidateTabCache();
+    await loadTwoSectionView('gmail', { forceRefresh: true });
+  } catch (e) {
+    await captureFailureFeedback('card', id, 'gmail-auto-label', e.message);
+    alert(`Card #${id}: ${e.message}`);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = 'AUTO LABEL';
+    }
+  }
+}
+
+async function archiveGmailCard(id, btn) {
+  const confirmed = window.confirm(`Archive Gmail card #${id}?`);
+  if (!confirmed) return;
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'ARCHIVING...';
+  }
+  try {
+    const rationale = window.prompt('Archive note (optional):', '') || '';
+    const decision = await requestDecision('card', id, 'archive-email', 'approved', rationale);
+    const r = await fetch(`/api/cards/${id}/archive-email`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision_event_id: decision.decision_event_id }),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail || 'Archive failed');
+    invalidateTabCache();
+    const card = document.getElementById(`card-${id}`);
+    if (card) {
+      card.style.opacity = '0.3';
+      setTimeout(() => card.remove(), 400);
+    }
+    await loadTwoSectionView('gmail', { forceRefresh: true });
+  } catch (e) {
+    await captureFailureFeedback('card', id, 'archive-email', e.message);
+    alert(`Card #${id}: ${e.message}`);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = 'ARCHIVE';
+    }
+  }
 }
 
 // -- Briefing -----------------------------------------------------------------
@@ -2291,12 +2487,13 @@ function connectSSE() {
       invalidateTabCache();
       updateCounts();
 
-      // macOS notification via API
-      fetch(`/api/notify`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: 'eng-buddy', message: card.summary?.slice(0, 80) })
-      });
+      if (dashboardSettings.macosNotifications) {
+        fetch(`/api/notify`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title: 'eng-buddy', message: card.summary?.slice(0, 80) })
+        });
+      }
     } catch (error) {
       recordDebugEvent('error', `Failed to process live event: ${error.message}`, {
         scope: activeDebugScope(),
@@ -2315,19 +2512,32 @@ function connectSSE() {
 
 // -- Terminal setting ---------------------------------------------------------
 
-async function loadTerminalSetting() {
+async function loadDashboardSettings() {
   try {
     const r = await fetch('/api/settings');
     const data = await r.json();
-    document.getElementById('terminal-select').value = data.terminal || 'Terminal';
+    dashboardSettings.terminal = data.terminal || 'Terminal';
+    dashboardSettings.macosNotifications = !!data.macos_notifications;
+    document.getElementById('terminal-select').value = dashboardSettings.terminal;
+    document.getElementById('macos-notifications-toggle').checked = dashboardSettings.macosNotifications;
   } catch {}
 }
 
 document.getElementById('terminal-select').addEventListener('change', async (e) => {
+  dashboardSettings.terminal = e.target.value;
   await fetch('/api/settings', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ terminal: e.target.value })
+  });
+});
+
+document.getElementById('macos-notifications-toggle').addEventListener('change', async (e) => {
+  dashboardSettings.macosNotifications = e.target.checked;
+  await fetch('/api/settings', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ macos_notifications: e.target.checked })
   });
 });
 
@@ -2365,7 +2575,7 @@ async function init() {
   recordDebugEvent('info', 'Initializing dashboard', { scope: 'ALL', origin: 'init' });
   await Promise.all([
     loadQueue(),
-    loadTerminalSetting(),
+    loadDashboardSettings(),
     refreshPollerTimers(),
   ]);
   startPollerTimers();
