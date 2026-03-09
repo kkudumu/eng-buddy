@@ -1,0 +1,110 @@
+# Tool Registry - Core catalog of available tools
+# Each tool entry defines type, MCP prefix, capabilities, auth model, and domains
+# Per-tool defaults live in separate {tool}.defaults.yml files
+
+tools:
+  jira:
+    type: mcp
+    prefix: mcp__mcp-atlassian__jira_
+    capabilities:
+      - create_issue
+      - update_issue
+      - transition_issue
+      - add_comment
+      - search
+      - get_issue
+      - add_worklog
+    auth: persistent
+    domains: [ticket_management, project_tracking]
+
+  freshservice:
+    type: mcp
+    prefix: mcp__freshservice-mcp__
+    capabilities:
+      - create_ticket
+      - update_ticket
+      - send_ticket_reply
+      - filter_tickets
+      - create_ticket_note
+      - get_ticket_by_id
+    auth: persistent
+    domains: [ticket_management, service_desk]
+
+  slack:
+    type: mcp
+    prefix: mcp__slack__
+    capabilities:
+      - post_message
+      - reply_to_thread
+      - get_channel_history
+      - get_thread_replies
+      - list_channels
+    auth: persistent
+    domains: [communication, notifications]
+
+  gmail:
+    type: mcp
+    prefix: mcp__gmail__
+    capabilities:
+      - send_email
+      - search_emails
+      - draft_email
+      - read_email
+      - modify_email
+    auth: persistent
+    domains: [communication, notifications]
+
+  google_calendar:
+    type: mcp
+    prefix: mcp__google-calendar__
+    capabilities:
+      - create_event
+      - list_events
+      - update_event
+      - get_freebusy
+    auth: persistent
+    domains: [scheduling]
+
+  confluence:
+    type: mcp
+    prefix: mcp__mcp-atlassian__confluence_
+    capabilities:
+      - create_page
+      - update_page
+      - search
+      - get_page
+    auth: persistent
+    domains: [documentation]
+
+  playwright:
+    type: browser
+    prefix: mcp__playwright__
+    capabilities:
+      - navigate
+      - click
+      - fill_form
+      - screenshot
+      - snapshot
+      - type
+      - select_option
+    auth: per_domain
+    auth_store: ~/.claude/eng-buddy/auth/sessions.enc
+    domains: [web_admin, sso_config, any_web_ui]
+    fallback: human_handoff
+
+  local_scripts:
+    type: script
+    path: ~/.claude/eng-buddy/bin/
+    discovery: automatic
+    auth: none
+    domains: [data_processing, automation, utilities]
+
+  claude:
+    type: ai
+    capabilities:
+      - generate_text
+      - analyze_data
+      - draft_response
+      - extract_fields
+    auth: none
+    domains: [content_generation, analysis, decision_making]
