@@ -18,6 +18,30 @@ async def test_health():
 
 
 @pytest.mark.asyncio
+async def test_restart_uses_launchd_managed_start_script(monkeypatch):
+    captured = {}
+
+    def fake_popen(args, start_new_session, stdout, stderr):
+        captured["args"] = args
+        captured["start_new_session"] = start_new_session
+        captured["stdout"] = stdout
+        captured["stderr"] = stderr
+        return object()
+
+    monkeypatch.setattr(server.subprocess, "Popen", fake_popen)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r = await client.post("/api/restart")
+
+    assert r.status_code == 200
+    assert r.json() == {"status": "restarting", "manager": "launchd"}
+    assert captured["args"][0] == "/bin/bash"
+    assert captured["args"][1].endswith("/dashboard/start.sh")
+    assert captured["args"][2] == "--restart"
+    assert captured["start_new_session"] is True
+
+
+@pytest.mark.asyncio
 async def test_send_debug_log_to_claude_queues_sync_event(tmp_path, monkeypatch):
     sync_file = tmp_path / ".runtime" / "claude-sync-events.txt"
     monkeypatch.setattr(server, "CLAUDE_SYNC_FILE", sync_file)

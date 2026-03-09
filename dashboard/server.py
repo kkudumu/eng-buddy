@@ -1273,35 +1273,21 @@ async def get_poller_status():
 
 @app.post("/api/restart")
 async def restart_server():
-    """Restart the dashboard by re-launching start.sh after this process exits."""
-    import signal
-
+    """Restart the dashboard through its launchd-managed launcher."""
     start_sh = Path(__file__).parent / "start.sh"
     if not start_sh.exists():
         raise HTTPException(500, "start.sh not found")
 
-    def _restart():
-        import time
-
-        time.sleep(0.3)
-        restart_script = (
-            "#!/bin/bash\n"
-            "while curl -s http://127.0.0.1:7777/api/health >/dev/null 2>&1; do sleep 0.2; done\n"
-            f'cd "{start_sh.parent}" && bash "{start_sh}" --background\n'
-        )
-        tmp = Path.home() / ".claude" / "eng-buddy" / ".restart.sh"
-        tmp.write_text(restart_script)
-        tmp.chmod(0o755)
+    try:
         subprocess.Popen(
-            ["/bin/bash", str(tmp)],
+            ["/bin/bash", str(start_sh), "--restart"],
             start_new_session=True,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        os.kill(os.getpid(), signal.SIGTERM)
-
-    threading.Thread(target=_restart, daemon=True).start()
-    return {"status": "restarting"}
+    except OSError as exc:
+        raise HTTPException(500, f"failed to restart dashboard: {exc}") from exc
+    return {"status": "restarting", "manager": "launchd"}
 
 
 @app.get("/api/daily/logs")

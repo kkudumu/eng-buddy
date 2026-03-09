@@ -6,7 +6,7 @@ A Claude Code skill + local web dashboard that turns your `~/.claude/` directory
 
 ## What You Get
 
-- **Dashboard** at `localhost:7777` — neo-brutalist dark-mode queue UI
+- **Dashboard** at `127.0.0.1:7777` — neo-brutalist dark-mode queue UI
 - **Background pollers** — Gmail, Slack, Jira, Freshservice feed cards into a local SQLite queue
 - **One-click execution** — approve a card and watch Claude execute it in a streaming terminal
 - **Refine before acting** — chat with Claude about a card before approving
@@ -22,8 +22,8 @@ git clone https://github.com/kkudumu/clod.git ~/.claude
 
 # 2. Start the dashboard
 cd ~/.claude/eng-buddy/dashboard
-./start.sh
-# Opens at http://localhost:7777
+./start.sh --background
+# Serves at http://127.0.0.1:7777 via launchd
 
 # 3. Invoke the skill
 # In Claude Code:

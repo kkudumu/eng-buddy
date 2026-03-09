@@ -4,10 +4,10 @@
 
 ```bash
 cd ~/.claude/eng-buddy/dashboard
-./start.sh
+./start.sh --background
 ```
 
-Opens at http://localhost:7777
+Managed by `launchd` and served at http://127.0.0.1:7777
 
 ## Background pollers (LaunchAgents)
 

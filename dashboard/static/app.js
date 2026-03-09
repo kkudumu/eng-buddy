@@ -1080,7 +1080,9 @@ async function approveCard(id) {
     runningTerminals[id] = term;
 
     // Connect WebSocket (decision token is mandatory on server)
-    const ws = new WebSocket(`ws://localhost:7777/ws/execute/${id}?decision_event_id=${decision.decision_event_id}`);
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsBaseUrl = `${wsProtocol}//${window.location.host}`;
+    const ws = new WebSocket(`${wsBaseUrl}/ws/execute/${id}?decision_event_id=${decision.decision_event_id}`);
     ws.onmessage = (e) => term.write(e.data);
     ws.onclose = () => {
       card.className = card.className.replace('running', 'completed');
