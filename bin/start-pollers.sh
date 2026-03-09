@@ -19,7 +19,7 @@ COMBINED_PATH="$CLAUDE_DIR:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
 mkdir -p "$RUNTIME_BIN" "$LAUNCH_AGENTS_DIR"
 
 # --- Sync poller scripts + brain.py to runtime ---
-for f in slack-poller.py gmail-poller.py calendar-poller.py jira-poller.py brain.py; do
+for f in slack-poller.py gmail-poller.py calendar-poller.py jira-poller.py freshservice-poller.py brain.py; do
     if [ -f "$SKILLS_BIN/$f" ]; then
         cp "$SKILLS_BIN/$f" "$RUNTIME_BIN/$f"
     fi
@@ -31,6 +31,7 @@ declare -a POLLERS=(
     "com.engbuddy.gmailpoller|gmail-poller.py|600"
     "com.engbuddy.calendarpoller|calendar-poller.py|1800"
     "com.engbuddy.jirapoller|jira-poller.py|300"
+    "com.engbuddy.freshservicepoller|freshservice-poller.py|300"
 )
 
 CHANGED=0
