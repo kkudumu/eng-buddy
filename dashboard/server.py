@@ -34,7 +34,9 @@ RUNTIME_DIR = ENG_BUDDY_DIR / ".runtime"
 CLAUDE_SYNC_FILE = RUNTIME_DIR / "claude-sync-events.txt"
 LAUNCHER_DIR = RUNTIME_DIR / "launchers"
 TERMINAL_APP = os.environ.get("ENG_BUDDY_TERMINAL", "Terminal")
-JIRA_USER = os.environ.get("ENG_BUDDY_JIRA_USER", "")
+JIRA_USER = os.environ.get("ENG_BUDDY_JIRA_USER", "kioja.kudumu@klaviyo.com")
+JIRA_BOARD_NAME = os.environ.get("ENG_BUDDY_JIRA_BOARD_NAME", "Systems")
+JIRA_PROJECT_KEY = os.environ.get("ENG_BUDDY_JIRA_PROJECT_KEY", "ITWORK2")
 SUGGESTION_SOURCE = "suggestions"
 SUGGESTION_REFRESH_INTERVAL_SECONDS = 1800
 SUGGESTION_MAX_ITEMS = 12
@@ -3475,6 +3477,21 @@ def _jira_lane_for_status(status: str, status_category: str = ""):
     return "in_progress"
 
 
+def _build_jira_sprint_prompt():
+    assignee = JIRA_USER or "currentUser()"
+    return (
+        "Use Atlassian MCP to fetch the active sprint issues for the Systems board in Jira.\n"
+        f"1. Call jira_get_agile_boards with board_name='{JIRA_BOARD_NAME}' and project_key='{JIRA_PROJECT_KEY}'.\n"
+        f"2. From the returned boards, choose the board that best matches project '{JIRA_PROJECT_KEY}' and the Systems sprint workflow.\n"
+        "3. Call jira_get_sprints_from_board with that board's ID and state='active'.\n"
+        f"4. If multiple active sprints exist, prefer the sprint whose name contains '{JIRA_PROJECT_KEY}' or starts with 'SYSTEMS'.\n"
+        f"5. Call jira_search with JQL: assignee = \"{assignee}\" AND project = {JIRA_PROJECT_KEY} AND sprint = <selected_sprint_id> ORDER BY status ASC, priority DESC.\n"
+        "6. Request fields: key,summary,status,priority,issuetype,labels,updated.\n"
+        "Return ONLY a JSON array. Each object must have: key, summary, status, status_category, priority, issue_type, labels, updated. "
+        "status_category must match Jira's statusCategory.name if available."
+    )
+
+
 @app.get("/api/jira/sprint")
 async def jira_sprint(refresh: bool = False):
     """Fetch current sprint tasks via Claude CLI + Atlassian MCP."""
@@ -3483,16 +3500,7 @@ async def jira_sprint(refresh: bool = False):
     if not refresh and _jira_cache["data"] and (time.time() - _jira_cache["fetched_at"]) < 120:
         return _jira_cache["data"]
 
-    user_clause = f'assignee = "{JIRA_USER}" AND ' if JIRA_USER else "assignee = currentUser() AND "
-    jql = f"{user_clause}sprint in openSprints() ORDER BY status ASC, priority DESC"
-    prompt = (
-        "Use Atlassian MCP jira_search.\n"
-        f"JQL: {jql}\n"
-        "Fields: key,summary,status,priority,issuetype,labels,updated\n"
-        "Return ONLY a JSON array. "
-        "Each object must have: key, summary, status, status_category, priority, issue_type, labels, updated. "
-        "status_category must match Jira's statusCategory.name if available."
-    )
+    prompt = _build_jira_sprint_prompt()
 
     try:
         result = _run_claude_print(prompt, timeout=75)

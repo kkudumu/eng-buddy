@@ -1057,3 +1057,18 @@ def test_suggestions_tab_assets_exist():
     app_text = (Path(__file__).parent.parent / "static" / "app.js").read_text(encoding="utf-8")
     assert 'data-source="suggestions"' in index_text
     assert "loadSuggestionsView" in app_text
+
+
+def test_build_jira_sprint_prompt_targets_systems_board(monkeypatch):
+    monkeypatch.setattr(server, "JIRA_USER", "kioja.kudumu@klaviyo.com")
+    monkeypatch.setattr(server, "JIRA_BOARD_NAME", "Systems")
+    monkeypatch.setattr(server, "JIRA_PROJECT_KEY", "ITWORK2")
+
+    prompt = server._build_jira_sprint_prompt()
+
+    assert "jira_get_agile_boards" in prompt
+    assert "board_name='Systems'" in prompt
+    assert "project_key='ITWORK2'" in prompt
+    assert 'assignee = "kioja.kudumu@klaviyo.com"' in prompt
+    assert "project = ITWORK2" in prompt
+    assert "sprint = <selected_sprint_id>" in prompt

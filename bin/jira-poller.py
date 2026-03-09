@@ -14,6 +14,9 @@ from pathlib import Path
 BASE_DIR = Path.home() / ".claude" / "eng-buddy"
 STATE_FILE = BASE_DIR / "jira-ingestor-state.json"
 DB_PATH = BASE_DIR / "inbox.db"
+JIRA_USER = "kioja.kudumu@klaviyo.com"
+JIRA_BOARD_NAME = "Systems"
+JIRA_PROJECT_KEY = "ITWORK2"
 
 def get_last_checked():
     try:
@@ -29,11 +32,12 @@ def fetch_jira_issues():
     """Use claude --print to call Atlassian MCP and get assigned issues."""
     prompt = (
         "Use the Atlassian MCP tools to find my current sprint tasks:\n"
-        "1. Call jira_get_agile_boards with board_name='Systems'.\n"
-        "2. Call jira_get_sprints_from_board with that board's ID, state='active'.\n"
-        "3. If multiple active sprints, pick the one whose name starts with 'SYSTEMS'.\n"
-        "4. Call jira_search with JQL: assignee = 'kioja.kudumu@klaviyo.com' "
-        "AND sprint = <sprint_id> ORDER BY priority DESC, status ASC\n"
+        f"1. Call jira_get_agile_boards with board_name='{JIRA_BOARD_NAME}' and project_key='{JIRA_PROJECT_KEY}'.\n"
+        f"2. Choose the board that best matches project '{JIRA_PROJECT_KEY}' and the Systems sprint workflow.\n"
+        "3. Call jira_get_sprints_from_board with that board's ID, state='active'.\n"
+        f"4. If multiple active sprints exist, prefer the sprint whose name contains '{JIRA_PROJECT_KEY}' or starts with 'SYSTEMS'.\n"
+        f"5. Call jira_search with JQL: assignee = \"{JIRA_USER}\" "
+        f"AND project = {JIRA_PROJECT_KEY} AND sprint = <sprint_id> ORDER BY priority DESC, status ASC\n"
         "Fields: summary,status,priority,issuetype,labels,updated. Limit: 30.\n"
         "Return ONLY a JSON array of objects with keys: "
         "key, summary, status, priority, updated, url. "
