@@ -36,6 +36,54 @@ const dashboardSettings = {
   macosNotifications: false,
 };
 
+// -- Theme System -------------------------------------------------------------
+
+const THEMES = ['midnight-ops', 'soft-kitty', 'neon-dreams'];
+const MODES = ['dark', 'light'];
+const THEME_STORAGE_KEY = 'eb-theme';
+const MODE_STORAGE_KEY = 'eb-mode';
+
+const themeState = {
+  theme: localStorage.getItem(THEME_STORAGE_KEY) || 'neon-dreams',
+  mode: localStorage.getItem(MODE_STORAGE_KEY) || 'dark',
+};
+
+function themeFilename(theme, mode) {
+  return mode === 'light' ? `${theme}-light` : theme;
+}
+
+function applyTheme() {
+  const file = themeFilename(themeState.theme, themeState.mode);
+  const link = document.getElementById('theme-css');
+  if (link) link.href = `/static/themes/${file}.css`;
+
+  const toggle = document.getElementById('mode-toggle');
+  if (toggle) toggle.innerHTML = themeState.mode === 'dark' ? '&#9790;' : '&#9728;';
+
+  const select = document.getElementById('theme-select');
+  if (select) select.value = themeState.theme;
+
+  localStorage.setItem(THEME_STORAGE_KEY, themeState.theme);
+  localStorage.setItem(MODE_STORAGE_KEY, themeState.mode);
+
+  // Also persist server-side
+  fetch('/api/settings', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ theme: themeState.theme, mode: themeState.mode }),
+  }).catch(() => {});
+}
+
+document.getElementById('theme-select').addEventListener('change', (e) => {
+  themeState.theme = e.target.value;
+  applyTheme();
+});
+
+document.getElementById('mode-toggle').addEventListener('click', () => {
+  themeState.mode = themeState.mode === 'dark' ? 'light' : 'dark';
+  applyTheme();
+});
+
 // -- Helpers ------------------------------------------------------------------
 
 function timeAgo(ts) {
@@ -2554,6 +2602,13 @@ async function loadDashboardSettings() {
     dashboardSettings.macosNotifications = !!data.macos_notifications;
     document.getElementById('terminal-select').value = dashboardSettings.terminal;
     document.getElementById('macos-notifications-toggle').checked = dashboardSettings.macosNotifications;
+    if (data.theme && THEMES.includes(data.theme) && !localStorage.getItem(THEME_STORAGE_KEY)) {
+      themeState.theme = data.theme;
+    }
+    if (data.mode && MODES.includes(data.mode) && !localStorage.getItem(MODE_STORAGE_KEY)) {
+      themeState.mode = data.mode;
+    }
+    applyTheme();
   } catch {}
 }
 
@@ -2638,6 +2693,7 @@ if (restartBtn) {
 // -- Init ---------------------------------------------------------------------
 
 async function init() {
+  applyTheme();
   renderDebugDrawer();
   recordDebugEvent('info', 'Initializing dashboard', { scope: 'ALL', origin: 'init' });
   await Promise.all([
