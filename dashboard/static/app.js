@@ -24,6 +24,7 @@ const pollerState = {
   refreshInFlight: false,
   countdownTimerId: null,
   refreshTimerId: null,
+  syncing: {},
 };
 const debugDrawerState = {
   entries: [],
@@ -35,6 +36,54 @@ const dashboardSettings = {
   terminal: 'Terminal',
   macosNotifications: false,
 };
+
+// -- Theme System -------------------------------------------------------------
+
+const THEMES = ['midnight-ops', 'soft-kitty', 'neon-dreams'];
+const MODES = ['dark', 'light'];
+const THEME_STORAGE_KEY = 'eb-theme';
+const MODE_STORAGE_KEY = 'eb-mode';
+
+const themeState = {
+  theme: localStorage.getItem(THEME_STORAGE_KEY) || 'neon-dreams',
+  mode: localStorage.getItem(MODE_STORAGE_KEY) || 'dark',
+};
+
+function themeFilename(theme, mode) {
+  return mode === 'light' ? `${theme}-light` : theme;
+}
+
+function applyTheme() {
+  const file = themeFilename(themeState.theme, themeState.mode);
+  const link = document.getElementById('theme-css');
+  if (link) link.href = `/static/themes/${file}.css`;
+
+  const toggle = document.getElementById('mode-toggle');
+  if (toggle) toggle.innerHTML = themeState.mode === 'dark' ? '&#9790;' : '&#9728;';
+
+  const select = document.getElementById('theme-select');
+  if (select) select.value = themeState.theme;
+
+  localStorage.setItem(THEME_STORAGE_KEY, themeState.theme);
+  localStorage.setItem(MODE_STORAGE_KEY, themeState.mode);
+
+  // Also persist server-side
+  fetch('/api/settings', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ theme: themeState.theme, mode: themeState.mode }),
+  }).catch(() => {});
+}
+
+document.getElementById('theme-select').addEventListener('change', (e) => {
+  themeState.theme = e.target.value;
+  applyTheme();
+});
+
+document.getElementById('mode-toggle').addEventListener('click', () => {
+  themeState.mode = themeState.mode === 'dark' ? 'light' : 'dark';
+  applyTheme();
+});
 
 // -- Helpers ------------------------------------------------------------------
 
@@ -246,12 +295,16 @@ function renderPollerTimers() {
     const countdownLabel = countdownSeconds === null ? '--:--' : formatCountdown(countdownSeconds);
     const lastSeen = poller.last_run_at ? timeAgo(poller.last_run_at) : 'never';
     const health = poller.health || 'unknown';
-    const title = `Last run ${lastSeen}. Next fire in ${countdownLabel}.`;
+    const isSyncing = pollerState.syncing && pollerState.syncing[poller.id];
+    const badgeClass = isSyncing ? 'syncing' : health;
+    const title = isSyncing
+      ? 'Syncing now...'
+      : `Last run ${lastSeen}. Next fire in ${countdownLabel}. Click to sync now.`;
     return `
-      <span class="poller-badge ${health}" title="${escHtml(title)}">
+      <span class="poller-badge ${badgeClass}" title="${escHtml(title)}" data-poller-id="${escHtml(poller.id)}" role="button" style="cursor:pointer">
         <span class="poller-name">${escHtml((poller.label || poller.id || 'poller').toUpperCase())}</span>
         <span class="poller-dot">•</span>
-        <span class="poller-countdown">${escHtml(countdownLabel)}</span>
+        <span class="poller-countdown">${isSyncing ? '' : escHtml(countdownLabel)}</span>
       </span>
     `;
   }).join('');
@@ -281,6 +334,39 @@ function startPollerTimers() {
   if (!pollerState.refreshTimerId) {
     pollerState.refreshTimerId = setInterval(refreshPollerTimers, 30000);
   }
+}
+
+function initPollerClickToSync() {
+  const container = document.getElementById('poller-timers');
+  if (!container) return;
+
+  container.addEventListener('click', async (e) => {
+    const badge = e.target.closest('.poller-badge[data-poller-id]');
+    if (!badge) return;
+
+    const pollerId = badge.dataset.pollerId;
+    if (pollerState.syncing[pollerId]) return;
+
+    pollerState.syncing[pollerId] = true;
+    renderPollerTimers();
+
+    try {
+      const r = await fetch(`/api/pollers/${encodeURIComponent(pollerId)}/sync`, { method: 'POST' });
+      if (!r.ok) throw new Error('sync failed');
+    } catch {
+      delete pollerState.syncing[pollerId];
+      renderPollerTimers();
+      return;
+    }
+
+    // Timeout fallback: clear syncing state after 60s
+    setTimeout(() => {
+      if (pollerState.syncing[pollerId]) {
+        delete pollerState.syncing[pollerId];
+        renderPollerTimers();
+      }
+    }, 60000);
+  });
 }
 
 function refreshActiveViewForSource(source) {
@@ -2443,6 +2529,113 @@ async function loadQueue(source = 'all', options = {}) {
   }
 }
 
+// -- Playbooks View -----------------------------------------------------------
+
+function renderPlaybookCard(pb, state) {
+  const stateColors = {draft: 'amber', approved: 'green', suggested: 'blue', executing: 'purple', error: 'red'};
+  const color = stateColors[state] || 'gray';
+  const steps = (pb.steps || []).map(s => {
+    const toolLabel = (s.action && s.action.tool) ? s.action.tool.split('__').pop() : 'unknown';
+    return `<div class="playbook-step">${s.id}. ${escHtml(s.name)} <span class="tool-badge">${escHtml(toolLabel)}</span>`
+      + (s.human_required ? ' <span class="badge-human">human</span>' : '')
+      + (s.auth_required ? ' <span class="badge-auth">auth</span>' : '')
+      + `</div>`;
+  }).join('');
+
+  let actions = '';
+  if (state === 'draft') {
+    actions = `<button class="action-btn" onclick="promotePlaybook('${escHtml(pb.id)}')">APPROVE</button>`
+      + ` <button class="action-btn danger" onclick="deleteDraft('${escHtml(pb.id)}')">REJECT</button>`;
+  } else if (state === 'approved') {
+    actions = `<input type="text" class="playbook-approval-input" placeholder="approve all" id="approval-${escHtml(pb.id)}" value="approve all">`
+      + ` <button class="action-btn" onclick="executePlaybook('${escHtml(pb.id)}')">EXECUTE</button>`;
+  }
+
+  return `<div class="card playbook-card playbook-${color}">
+    <div class="card-header">
+      <strong>${escHtml(pb.name)}</strong>
+      <span class="confidence-badge confidence-${pb.confidence}">${pb.confidence}</span>
+      <span class="playbook-version">v${pb.version}</span>
+      ${pb.executions ? `<span class="playbook-runs">${pb.executions} runs</span>` : ''}
+    </div>
+    <div class="playbook-steps">${steps}</div>
+    <div class="card-actions">${actions}</div>
+  </div>`;
+}
+
+async function loadPlaybooksView() {
+  const queue = document.getElementById('queue');
+  queue.innerHTML = '<div class="loading">Loading playbooks...</div>';
+
+  try {
+    const [draftsResp, approvedResp] = await Promise.all([
+      fetch('/api/playbooks/drafts'),
+      fetch('/api/playbooks'),
+    ]);
+    const draftsData = await draftsResp.json();
+    const approvedData = await approvedResp.json();
+
+    let html = '';
+
+    // Pending Review section
+    const drafts = draftsData.drafts || [];
+    html += `<div class="section-group"><div class="section-header">PENDING REVIEW <span class="section-count">${drafts.length}</span></div><div class="section-body">`;
+    if (drafts.length) {
+      const draftDetails = await Promise.all(drafts.map(d => fetch(`/api/playbooks/${d.id}`).then(r => r.json())));
+      html += draftDetails.map(pb => renderPlaybookCard(pb, 'draft')).join('');
+    } else {
+      html += '<div class="section-empty">No playbooks pending review</div>';
+    }
+    html += '</div></div>';
+
+    // Approved Playbooks section
+    const approved = approvedData.playbooks || [];
+    html += `<div class="section-group"><div class="section-header">APPROVED PLAYBOOKS <span class="section-count">${approved.length}</span></div><div class="section-body">`;
+    if (approved.length) {
+      const approvedDetails = await Promise.all(approved.map(p => fetch(`/api/playbooks/${p.id}`).then(r => r.json())));
+      html += approvedDetails.map(pb => renderPlaybookCard(pb, 'approved')).join('');
+    } else {
+      html += '<div class="section-empty">No approved playbooks yet</div>';
+    }
+    html += '</div></div>';
+
+    queue.innerHTML = html;
+  } catch (e) {
+    queue.innerHTML = `<div style="color:#ea4335;padding:40px;text-align:center;">Failed to load playbooks: ${escHtml(e.message)}</div>`;
+  }
+}
+
+async function executePlaybook(playbookId) {
+  const approvalInput = document.getElementById(`approval-${playbookId}`);
+  const approval = approvalInput ? approvalInput.value : 'approve all';
+  const ticketContext = window._currentTicketContext || {};
+  try {
+    const resp = await fetch('/api/playbooks/execute', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({playbook_id: playbookId, ticket_context: ticketContext, approval: approval}),
+    });
+    const data = await resp.json();
+    if (data.status === 'dispatched') {
+      showNotification(`Playbook dispatched to terminal (${data.steps} steps)`);
+    } else {
+      showNotification(`Error: ${data.error}`, 'error');
+    }
+  } catch (e) {
+    showNotification(`Dispatch failed: ${e.message}`, 'error');
+  }
+}
+
+async function promotePlaybook(playbookId) {
+  await fetch(`/api/playbooks/${playbookId}/promote`, {method: 'POST'});
+  loadPlaybooksView();
+}
+
+async function deleteDraft(playbookId) {
+  await fetch(`/api/playbooks/drafts/${playbookId}`, {method: 'DELETE'});
+  loadPlaybooksView();
+}
+
 // -- Filters ------------------------------------------------------------------
 
 document.querySelectorAll('.filter-btn[data-source]').forEach(btn => {
@@ -2472,6 +2665,8 @@ document.querySelectorAll('.filter-btn[data-source]').forEach(btn => {
       loadKnowledgeView();
     } else if (activeFilter === 'suggestions') {
       loadSuggestionsView();
+    } else if (activeFilter === 'playbooks') {
+      loadPlaybooksView();
     } else {
       loadQueue(activeFilter);
     }
@@ -2493,6 +2688,9 @@ function connectSSE() {
       const { source } = JSON.parse(e.data);
       if (source) {
         invalidateTabCache();
+        if (pollerState.syncing[source]) {
+          delete pollerState.syncing[source];
+        }
         refreshPollerTimers();
         refreshActiveViewForSource(source);
       }
@@ -2554,6 +2752,13 @@ async function loadDashboardSettings() {
     dashboardSettings.macosNotifications = !!data.macos_notifications;
     document.getElementById('terminal-select').value = dashboardSettings.terminal;
     document.getElementById('macos-notifications-toggle').checked = dashboardSettings.macosNotifications;
+    if (data.theme && THEMES.includes(data.theme) && !localStorage.getItem(THEME_STORAGE_KEY)) {
+      themeState.theme = data.theme;
+    }
+    if (data.mode && MODES.includes(data.mode) && !localStorage.getItem(MODE_STORAGE_KEY)) {
+      themeState.mode = data.mode;
+    }
+    applyTheme();
   } catch {}
 }
 
@@ -2638,6 +2843,7 @@ if (restartBtn) {
 // -- Init ---------------------------------------------------------------------
 
 async function init() {
+  applyTheme();
   renderDebugDrawer();
   recordDebugEvent('info', 'Initializing dashboard', { scope: 'ALL', origin: 'init' });
   await Promise.all([
@@ -2646,6 +2852,7 @@ async function init() {
     refreshPollerTimers(),
   ]);
   startPollerTimers();
+  initPollerClickToSync();
   updateCounts();
   connectSSE();
 
