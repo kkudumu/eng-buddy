@@ -1,0 +1,97 @@
+/* Neon Dreams Light — Vaporwave light */
+@import url('https://fonts.googleapis.com/css2?family=VT323&family=JetBrains+Mono:wght@400;700;800&display=swap');
+
+:root {
+  --bg: #e8d5f5;
+  --card-bg: #f5eeff;
+  --surface: #ede0f8;
+  --surface-alt: #e0d0f0;
+  --border: #d040a0;
+  --border-subtle: #d8c0e8;
+  --border-faint: #e8d8f0;
+  --hover-bg: #e0d0f0;
+  --text: #1a0040;
+  --muted: #6a4090;
+  --overlay-bg: rgba(232, 213, 245, 0.92);
+
+  --font: 'JetBrains Mono', monospace;
+  --font-heading: 'VT323', monospace;
+
+  --radius: 0px;
+  --radius-sm: 0px;
+  --transition-speed: 0.15s;
+
+  --shadow: 0 0 8px rgba(208, 64, 160, 0.2), 3px 3px 0 rgba(208, 64, 160, 0.15);
+  --shadow-sm: 0 0 4px rgba(208, 64, 160, 0.15);
+  --shadow-hover: 0 0 14px rgba(208, 64, 160, 0.35), 4px 4px 0 rgba(1, 160, 200, 0.15);
+
+  --fresh: #00a060;
+  --jira: #0090d0;
+  --slack: #d04080;
+  --gmail: #d04040;
+  --urgent: #1a0040;
+  --needs-response: #a08000;
+
+  --debug-info: #0090d0;
+  --debug-error: #d04040;
+  --debug-surface: rgba(245, 238, 255, 0.97);
+
+  --held-stripe: repeating-linear-gradient(
+    45deg, #e0d0f0, #e0d0f0 4px, #f5eeff 4px, #f5eeff 8px
+  );
+
+  --neon-pink: #d040a0;
+  --neon-cyan: #0090d0;
+  --neon-green: #00a060;
+  --neon-yellow: #a08000;
+  --neon-purple: #8040c0;
+}
+
+/* Light grid background */
+body {
+  background-image:
+    linear-gradient(rgba(128, 64, 192, 0.08) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(128, 64, 192, 0.08) 1px, transparent 1px);
+  background-size: 40px 40px;
+}
+
+/* No scanline on light — too distracting */
+
+/* Retro window card style */
+.card {
+  border: 2px solid var(--neon-pink);
+  position: relative;
+}
+
+.card::before {
+  content: '';
+  display: block;
+  height: 22px;
+  background: linear-gradient(90deg, #f0a0d0, #c0a0e0, #a0d0f0);
+  margin: -1px -1px 0 -1px;
+  border-bottom: 1px solid var(--neon-pink);
+}
+
+.card:hover { border-color: var(--neon-cyan); }
+.card.running { border-color: var(--neon-green); box-shadow: 0 0 10px rgba(0, 160, 96, 0.25); }
+.card.running::before { background: linear-gradient(90deg, #80e0b0, #a0d0f0, #80e0b0); }
+
+#header-title {
+  font-family: var(--font-heading);
+  font-size: 28px;
+  letter-spacing: 6px;
+  background: linear-gradient(180deg, #d040a0, #8040c0, #0090d0);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.action-btn { border-color: var(--neon-pink); color: var(--neon-pink); }
+.action-btn:hover { background: var(--neon-pink); color: #fff; }
+.action-btn.approve { border-color: var(--neon-green); color: var(--neon-green); }
+.action-btn.approve:hover { background: var(--neon-green); color: #fff; }
+.filter-btn.active { border-bottom: 3px solid var(--neon-cyan); color: var(--neon-cyan); }
+.debug-drawer { border-color: var(--neon-purple); }
+.briefing-modal { border-color: var(--neon-cyan); }
+.briefing-title { font-family: var(--font-heading); font-size: 24px; }
+.section-header { border-bottom-color: var(--border-subtle); }
