@@ -142,6 +142,8 @@ def _default_settings() -> dict:
     return {
         "terminal": DEFAULT_TERMINAL_APP,
         "macos_notifications": False,
+        "theme": "neon-dreams",
+        "mode": "dark",
     }
 
 
@@ -161,6 +163,12 @@ def _load_settings() -> dict:
         if isinstance(terminal, str) and terminal:
             settings["terminal"] = terminal
         settings["macos_notifications"] = bool(loaded.get("macos_notifications", False))
+        theme = loaded.get("theme")
+        if isinstance(theme, str) and theme in ("midnight-ops", "soft-kitty", "neon-dreams"):
+            settings["theme"] = theme
+        mode = loaded.get("mode")
+        if isinstance(mode, str) and mode in ("dark", "light"):
+            settings["mode"] = mode
     return settings
 
 
@@ -172,6 +180,12 @@ def _save_settings(settings: dict) -> dict:
     normalized["macos_notifications"] = bool(
         settings.get("macos_notifications", normalized["macos_notifications"])
     )
+    theme = settings.get("theme", normalized["theme"])
+    if theme in ("midnight-ops", "soft-kitty", "neon-dreams"):
+        normalized["theme"] = theme
+    mode = settings.get("mode", normalized["mode"])
+    if mode in ("dark", "light"):
+        normalized["mode"] = mode
     path.write_text(json.dumps(normalized, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return normalized
 
@@ -3826,6 +3840,10 @@ async def update_settings(body: dict):
         settings["terminal"] = body["terminal"]
     if "macos_notifications" in body:
         settings["macos_notifications"] = bool(body["macos_notifications"])
+    if "theme" in body:
+        settings["theme"] = body["theme"]
+    if "mode" in body:
+        settings["mode"] = body["mode"]
     settings = _save_settings(settings)
     TERMINAL_APP = settings["terminal"]
     return settings
