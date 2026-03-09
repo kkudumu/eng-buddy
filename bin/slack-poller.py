@@ -30,6 +30,7 @@ SETTINGS_FILE = BASE_DIR / "dashboard-settings.json"
 LOOKBACK_DAYS = 3
 EXCLUDED_CHANNELS = {"critical-broadcast"}
 BROADCAST_MARKERS = {"<!here>", "<!channel>", "<!everyone>", "@here", "@channel", "@everyone"}
+DASHBOARD_INVALIDATE_URL = "http://127.0.0.1:7777/api/cache-invalidate"
 
 
 # ---------------------------------------------------------------------------
@@ -47,6 +48,21 @@ def load_state():
 
 def save_state(state):
     STATE_FILE.write_text(json.dumps(state, indent=2))
+
+
+def invalidate_dashboard_cache(source="slack"):
+    payload = json.dumps({"source": source}).encode("utf-8")
+    request = urllib.request.Request(
+        DASHBOARD_INVALIDATE_URL,
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=2):
+            return
+    except (urllib.error.URLError, TimeoutError, OSError):
+        return
 
 
 # ---------------------------------------------------------------------------
@@ -622,7 +638,7 @@ def fetch_recent_participation_items(days=LOOKBACK_DAYS):
 def write_to_inbox_db(item):
     """Write a classified Slack message card to inbox.db."""
     if not DB_PATH.exists():
-        return
+        return False
 
     proposed_actions = json.dumps([{
         "type": "send_slack_reply",
@@ -636,6 +652,7 @@ def write_to_inbox_db(item):
 
     try:
         conn = sqlite3.connect(DB_PATH)
+        before = conn.total_changes
         conn.execute(
             """INSERT INTO cards
                (source, timestamp, summary, classification, status,
@@ -664,10 +681,13 @@ def write_to_inbox_db(item):
                 1 if item.get("responded") else 0,
             ),
         )
+        changed = conn.total_changes > before
         conn.commit()
         conn.close()
+        return changed
     except sqlite3.OperationalError as e:
         print(f"DB write error (non-fatal): {e}")
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -784,9 +804,11 @@ def main():
 
     # Write to inbox.db + collect needs-action for notification
     needs_action_items = []
+    dashboard_changed = False
 
     for item in messages:
-        write_to_inbox_db(item)
+        if write_to_inbox_db(item):
+            dashboard_changed = True
         if item.get("section") == "needs-action" and not item.get("responded"):
             needs_action_items.append(item)
 
@@ -819,6 +841,9 @@ def main():
     # Persist state
     state["last_check"] = str(now.timestamp())
     save_state(state)
+
+    if dashboard_changed:
+        invalidate_dashboard_cache("slack")
 
 
 if __name__ == "__main__":

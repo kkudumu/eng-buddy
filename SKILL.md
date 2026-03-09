@@ -25,20 +25,20 @@ STEP 0: Install/sync hooks, then activate auto-logging (MUST DO FIRST)
 STEP 0.5: Launch dashboard (MUST DO ON EVERY INVOCATION)
 - Use Bash (run in background): ~/.claude/eng-buddy/dashboard/start.sh --background
 - This ensures the FastAPI dashboard LaunchAgent is installed and either healthy or actively booting at http://127.0.0.1:7777
-- Then open it in the user's default browser:
-  - Use Bash: open http://127.0.0.1:7777
 - If start.sh outputs "ALREADY_RUNNING", just open browser tab
-- If start.sh outputs "STARTED", open browser tab
-- If start.sh outputs "STARTING", open browser tab and continue; the dashboard is still booting in the background
+- If start.sh outputs "STARTED", continue to poller refresh before opening the tab
+- If start.sh outputs "STARTING", continue to poller refresh before opening the tab; the dashboard is still booting in the background
 - If start.sh outputs "TIMEOUT", warn the user: "Dashboard failed to start — check ~/.claude/eng-buddy/dashboard.log"
-- Tell the user: "Dashboard is live at http://127.0.0.1:7777"
 
 STEP 0.7: Start pollers (MUST DO ON EVERY INVOCATION)
 - Use Bash: bash ~/.claude/skills/eng-buddy/bin/start-pollers.sh
-- This syncs poller scripts to runtime, installs/reloads LaunchAgents, and runs an initial poll
+- This syncs poller scripts to runtime, installs/reloads LaunchAgents, and kicks off an immediate refresh pass so the dashboard repaints with fresh Slack/Gmail/Calendar/Jira data even if a poller fired recently
 - Pollers: Slack (5min), Gmail (10min), Calendar (30min), Jira (5min)
 - If output contains "POLLERS_OK", pollers are running
 - If any errors, warn user but continue (pollers are non-blocking)
+- Then open the dashboard in the user's default browser:
+  - Use Bash: open http://127.0.0.1:7777
+- Tell the user: "Dashboard is live at http://127.0.0.1:7777"
 
 STEP 1: Check if workspace exists
 - Use Bash: ls -la ~/.claude/eng-buddy/ 2>/dev/null || echo "WORKSPACE_DOES_NOT_EXIST"

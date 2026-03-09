@@ -34,6 +34,7 @@ DB_PATH    = BASE_DIR / "inbox.db"
 SETTINGS_FILE = BASE_DIR / "dashboard-settings.json"
 TOKEN_URL  = "https://oauth2.googleapis.com/token"
 GMAIL_BASE = "https://gmail.googleapis.com/gmail/v1/users/me"
+DASHBOARD_INVALIDATE_URL = "http://127.0.0.1:7777/api/cache-invalidate"
 
 # How many noise hits before we surface a filter suggestion
 FILTER_SUGGEST_THRESHOLD = 10
@@ -140,6 +141,21 @@ def load_state():
 
 def save_state(state):
     STATE_FILE.write_text(json.dumps(state, indent=2))
+
+
+def invalidate_dashboard_cache(source="gmail"):
+    payload = json.dumps({"source": source}).encode("utf-8")
+    request = urllib.request.Request(
+        DASHBOARD_INVALIDATE_URL,
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=2):
+            return
+    except (urllib.error.URLError, TimeoutError, OSError):
+        return
 
 
 # ---------------------------------------------------------------------------
@@ -407,7 +423,8 @@ def build_classification_map(results, batch_items):
 def main():
     state        = load_state()
     token        = get_token()
-    already_seen = set(state.get("seen_msg_ids", []))
+    refresh_now  = "--refresh-now" in sys.argv[1:]
+    already_seen = set() if refresh_now else set(state.get("seen_msg_ids", []))
     processed_seen = set()
 
     # Scan inbox emails from the last 3 days.
@@ -474,6 +491,7 @@ def main():
     action_needed = []
     alerts        = []
     noise_items   = []
+    db_changed    = False
 
     if conn:
         for item in batch_items:
@@ -487,6 +505,7 @@ def main():
 
             if write_card_to_db(conn, item, cl_result):
                 processed_seen.add(msg_id)
+                db_changed = True
 
             section = cl_result.get("section", "noise")
             if section == "action-needed":
@@ -565,6 +584,9 @@ def main():
     state["last_check_ts"] = int(datetime.now().timestamp())
     state["seen_msg_ids"]  = list((already_seen | processed_seen))[-500:]
     save_state(state)
+
+    if db_changed:
+        invalidate_dashboard_cache("gmail")
 
 
 if __name__ == "__main__":

@@ -100,7 +100,7 @@ for entry in "${POLLERS[@]}"; do
     IFS='|' read -r LABEL SCRIPT INTERVAL <<< "$entry"
     (
         cd "$RUNTIME_BIN"
-        PATH="$COMBINED_PATH" "$PYTHON" "$SCRIPT" >> "$RUNTIME_DIR/${SCRIPT%.py}.log" 2>&1 &
+        PATH="$COMBINED_PATH" "$PYTHON" "$SCRIPT" --refresh-now >> "$RUNTIME_DIR/${SCRIPT%.py}.log" 2>&1 &
     )
 done
 

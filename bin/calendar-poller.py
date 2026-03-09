@@ -10,6 +10,8 @@ import re
 import sqlite3
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 from datetime import datetime, date, timedelta, timezone
 from pathlib import Path
 
@@ -22,6 +24,10 @@ DB_PATH = BASE_DIR / "inbox.db"
 STATE_FILE = BASE_DIR / "calendar-poller-state.json"
 CLAUDE_FETCH_TIMEOUT_SECONDS = 120
 CLAUDE_ENRICH_TIMEOUT_SECONDS = 45
+DASHBOARD_INVALIDATE_URL = os.environ.get(
+    "ENG_BUDDY_DASHBOARD_INVALIDATE_URL",
+    "http://127.0.0.1:7777/api/cache-invalidate",
+)
 
 
 def load_state():
@@ -35,6 +41,21 @@ def load_state():
 
 def save_state(state):
     STATE_FILE.write_text(json.dumps(state, indent=2))
+
+
+def invalidate_dashboard_cache(source="calendar"):
+    payload = json.dumps({"source": source}).encode("utf-8")
+    request = urllib.request.Request(
+        DASHBOARD_INVALIDATE_URL,
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=2):
+            return
+    except (urllib.error.URLError, TimeoutError, OSError):
+        return
 
 
 def compute_fetch_window(today=None):
@@ -135,17 +156,19 @@ def fetch_events():
     start_date, end_date = compute_fetch_window()
     current_date = start_date
     events = []
+    had_errors = False
     while current_date <= end_date:
         try:
             events.extend(_fetch_events_for_date(current_date))
         except Exception as e:
+            had_errors = True
             print(
                 f"[{datetime.now().strftime('%H:%M')}] Calendar fetch failed for "
                 f"{current_date.isoformat()}: {e}"
             )
         current_date += timedelta(days=1)
 
-    return _dedupe_events(events)
+    return _dedupe_events(events), had_errors
 
 
 def enrich_events(events):
@@ -233,21 +256,32 @@ def write_to_db(events):
 def main():
     state = load_state()
     now = datetime.now()
+    refresh_now = "--refresh-now" in sys.argv[1:]
 
     # Skip if already fetched this half-hour
     last_fetch = state.get("last_fetch", "")
     current_slot = now.strftime("%Y-%m-%d-%H") + ("-00" if now.minute < 30 else "-30")
-    if last_fetch == current_slot:
+    if not refresh_now and last_fetch == current_slot:
         print(f"[{now.strftime('%H:%M')}] Already fetched this slot, skipping")
         return
 
     print(f"[{now.strftime('%H:%M')}] Fetching calendar events...")
-    events = fetch_events()
+    events, had_errors = fetch_events()
 
     if events:
         print(f"[{now.strftime('%H:%M')}] Enriching {len(events)} events with context...")
         events = enrich_events(events)
-        write_to_db(events)
+    elif had_errors:
+        print(
+            f"[{now.strftime('%H:%M')}] Calendar refresh had fetch errors; "
+            "retaining existing dashboard cards"
+        )
+        return
+
+    write_to_db(events)
+    invalidate_dashboard_cache("calendar")
+
+    if events:
         print(f"[{now.strftime('%H:%M')}] Wrote {len(events)} calendar cards to inbox.db")
     else:
         print(f"[{now.strftime('%H:%M')}] No events found in the current weekly horizon")

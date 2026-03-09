@@ -5,9 +5,12 @@ Fetches Jira issues assigned to current user since last check.
 Writes cards to inbox.db.
 """
 import json
+import os
 import re
 import sqlite3
 import subprocess
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -17,6 +20,10 @@ DB_PATH = BASE_DIR / "inbox.db"
 JIRA_USER = "kioja.kudumu@klaviyo.com"
 JIRA_BOARD_NAME = "Systems"
 JIRA_PROJECT_KEY = "ITWORK2"
+DASHBOARD_INVALIDATE_URL = os.environ.get(
+    "ENG_BUDDY_DASHBOARD_INVALIDATE_URL",
+    "http://127.0.0.1:7777/api/cache-invalidate",
+)
 
 def get_last_checked():
     try:
@@ -27,6 +34,21 @@ def get_last_checked():
 
 def set_last_checked(ts):
     STATE_FILE.write_text(json.dumps({"last_checked": ts}))
+
+
+def invalidate_dashboard_cache(source="jira"):
+    payload = json.dumps({"source": source}).encode("utf-8")
+    request = urllib.request.Request(
+        DASHBOARD_INVALIDATE_URL,
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=2):
+            return
+    except (urllib.error.URLError, TimeoutError, OSError):
+        return
 
 def fetch_jira_issues():
     """Use claude --print to call Atlassian MCP and get assigned issues."""
@@ -63,16 +85,23 @@ def write_card(conn, issue):
         "source": "jira",
         "url": issue.get("url", "")
     }])
-    # UNIQUE(source, summary) index prevents duplicates via INSERT OR IGNORE
+    before = conn.total_changes
     conn.execute(
-        """INSERT OR IGNORE INTO cards
+        """INSERT INTO cards
            (source, timestamp, summary, classification, status, proposed_actions, execution_status)
-           VALUES (?, ?, ?, ?, 'pending', ?, 'not_run')""",
+           VALUES (?, ?, ?, ?, 'pending', ?, 'not_run')
+           ON CONFLICT(source, summary) DO UPDATE SET
+               timestamp=excluded.timestamp,
+               classification=excluded.classification,
+               status='pending',
+               proposed_actions=excluded.proposed_actions,
+               execution_status='not_run'""",
         ("jira", datetime.now(timezone.utc).isoformat(),
          summary,
          issue.get("priority", "needs-response").lower(),
          proposed)
     )
+    return conn.total_changes > before
 
 def main():
     issues = fetch_jira_issues()
@@ -81,11 +110,15 @@ def main():
         return
 
     conn = sqlite3.connect(DB_PATH)
+    dashboard_changed = False
     for issue in issues:
-        write_card(conn, issue)
+        if write_card(conn, issue):
+            dashboard_changed = True
     conn.commit()
     conn.close()
     set_last_checked(datetime.now(timezone.utc).isoformat())
+    if dashboard_changed:
+        invalidate_dashboard_cache("jira")
     print(f"[{datetime.now()}] Processed {len(issues)} Jira issues.")
 
 if __name__ == "__main__":

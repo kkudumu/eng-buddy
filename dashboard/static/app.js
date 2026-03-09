@@ -283,6 +283,39 @@ function startPollerTimers() {
   }
 }
 
+function refreshActiveViewForSource(source) {
+  const normalized = String(source || '').toLowerCase();
+  if (!normalized) return;
+
+  if (activeFilter === 'all') {
+    loadQueue('all', { forceRefresh: true });
+    return;
+  }
+
+  if (activeFilter === 'tasks' && ['slack', 'gmail', 'calendar', 'jira'].includes(normalized)) {
+    loadTasksView({ forceRefresh: true });
+    return;
+  }
+
+  if (activeFilter !== normalized) return;
+
+  if (normalized === 'gmail' || normalized === 'slack') {
+    loadTwoSectionView(normalized, { forceRefresh: true });
+    return;
+  }
+  if (normalized === 'calendar') {
+    loadCalendarView({ forceRefresh: true });
+    return;
+  }
+  if (normalized === 'jira') {
+    loadJiraStatusView({ forceRefresh: true });
+    return;
+  }
+  if (normalized === 'suggestions') {
+    loadSuggestionsView({ forceRefresh: true });
+  }
+}
+
 function activeDebugScope() {
   return (activeFilter || 'all').toUpperCase();
 }
@@ -2458,9 +2491,10 @@ function connectSSE() {
   es.addEventListener('cache-invalidate', (e) => {
     try {
       const { source } = JSON.parse(e.data);
-      if (source) invalidateTabCache();
-      if (source === 'suggestions' && activeFilter === 'suggestions') {
-        loadSuggestionsView({ forceRefresh: true });
+      if (source) {
+        invalidateTabCache();
+        refreshPollerTimers();
+        refreshActiveViewForSource(source);
       }
     } catch (error) {
       recordDebugEvent('error', `Failed to process cache invalidation event: ${error.message}`, {
