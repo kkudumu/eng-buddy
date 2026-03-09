@@ -84,6 +84,100 @@ function invalidateTabCache() {
   Object.keys(tabCache).forEach((key) => delete tabCache[key]);
 }
 
+function parseCalendarDate(value) {
+  if (!value) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    const [year, month, day] = value.split('-').map(Number);
+    return new Date(year, month - 1, day);
+  }
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function startOfLocalDay(value) {
+  const day = new Date(value);
+  day.setHours(0, 0, 0, 0);
+  return day;
+}
+
+function addDays(value, days) {
+  const copy = new Date(value);
+  copy.setDate(copy.getDate() + days);
+  return copy;
+}
+
+function getUpcomingWeekConfig(now = new Date()) {
+  const todayStart = startOfLocalDay(now);
+  const isSunday = todayStart.getDay() === 0;
+  const rangeStart = addDays(todayStart, 1);
+  const rangeEndExclusive = isSunday
+    ? addDays(todayStart, 8)
+    : addDays(todayStart, 7 - todayStart.getDay() + 1);
+
+  return {
+    todayStart,
+    rangeStart,
+    rangeEndExclusive,
+    label: isSunday ? 'UPCOMING NEXT WEEK' : 'UPCOMING THIS WEEK',
+    emptyLabel: isSunday ? 'NO EVENTS NEXT WEEK' : 'NOTHING ELSE THIS WEEK',
+  };
+}
+
+function formatCalendarWhen(startValue, endValue) {
+  const start = parseCalendarDate(startValue);
+  const end = parseCalendarDate(endValue);
+
+  if (start) {
+    const dayLabel = start.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
+    if ((startValue || '').includes('T')) {
+      const startTime = start.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+      const endTime = end ? end.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '';
+      return `${dayLabel} ${startTime}${endTime ? ` - ${endTime}` : ''}`;
+    }
+    return `${dayLabel} ALL DAY`;
+  }
+
+  return 'TIME TBD';
+}
+
+function renderCalendarEvent(card) {
+  const actions = Array.isArray(card.proposed_actions) ? card.proposed_actions : [];
+  const event = actions[0] || {};
+  const context = card.context_notes ? escHtml(card.context_notes) : '';
+  const meetLink = event.hangout_link || '';
+  const attendees = (event.attendees || []).slice(0, 5).map(a => escHtml(a)).join(', ');
+  const isHighPrio = card.classification === 'high';
+  const title = escHtml(event.summary || card.summary || 'Untitled event');
+  const when = escHtml(formatCalendarWhen(event.start, event.end));
+
+  return `
+    <div class="calendar-event ${isHighPrio ? 'high-prio' : ''}">
+      <div class="event-time">${when}</div>
+      <div class="event-title">${title}</div>
+      ${context ? `<div class="event-context">${context}</div>` : ''}
+      ${attendees ? `<div class="event-attendees">WITH: ${attendees}</div>` : ''}
+      <div class="event-actions">
+        ${meetLink ? `<a href="${escHtml(meetLink)}" target="_blank" class="action-btn approve">JOIN</a>` : ''}
+        <button class="action-btn open-session" onclick="openSession(${card.id})">PREP NOTES</button>
+      </div>
+    </div>`;
+}
+
+function renderCalendarSection(title, cards, emptyLabel) {
+  const body = cards.length
+    ? cards.map(renderCalendarEvent).join('')
+    : `<div class="calendar-empty">${escHtml(emptyLabel)}</div>`;
+
+  return `
+    <div class="calendar-section">
+      <div class="section-header">
+        <span>${escHtml(title)}</span>
+        <span class="section-count">${cards.length}</span>
+      </div>
+      ${body}
+    </div>`;
+}
+
 function setCounts(counts = {}) {
   document.getElementById('count-pending').textContent = `${counts.pending || 0} pending`;
   document.getElementById('count-held').textContent = `${counts.held || 0} held`;
@@ -414,34 +508,38 @@ async function loadCalendarView(options = {}) {
     const r = await fetch('/api/cards?source=calendar');
     const data = await r.json();
 
-    if (!data.cards.length) {
-      const html = '<div style="color:#444;padding:40px;text-align:center;letter-spacing:4px">NO EVENTS TODAY</div>';
-      cacheView(cacheKey, { html });
-      if (activeFilter === 'calendar') queue.innerHTML = html;
-      return;
-    }
+    const upcomingConfig = getUpcomingWeekConfig();
+    const todayCards = [];
+    const upcomingWeekCards = [];
 
-    const eventsHtml = data.cards.map(card => {
+    data.cards.forEach((card) => {
       const actions = Array.isArray(card.proposed_actions) ? card.proposed_actions : [];
       const event = actions[0] || {};
-      const context = card.context_notes ? escHtml(card.context_notes) : '';
-      const meetLink = event.hangout_link || '';
-      const attendees = (event.attendees || []).slice(0, 5).map(a => escHtml(a)).join(', ');
-      const isHighPrio = card.classification === 'high';
+      const eventStart = parseCalendarDate(event.start || card.timestamp);
+      if (!eventStart) return;
 
-      return `
-        <div class="calendar-event ${isHighPrio ? 'high-prio' : ''}">
-          <div class="event-time">${escHtml(card.summary || '')}</div>
-          ${context ? `<div class="event-context">${context}</div>` : ''}
-          ${attendees ? `<div class="event-attendees">WITH: ${attendees}</div>` : ''}
-          <div class="event-actions">
-            ${meetLink ? `<a href="${escHtml(meetLink)}" target="_blank" class="action-btn approve">JOIN</a>` : ''}
-            <button class="action-btn open-session" onclick="openSession(${card.id})">PREP NOTES</button>
-          </div>
-        </div>`;
-    }).join('');
+      const eventDay = startOfLocalDay(eventStart);
+      if (eventDay.getTime() === upcomingConfig.todayStart.getTime()) {
+        todayCards.push(card);
+      } else if (eventDay >= upcomingConfig.rangeStart && eventDay < upcomingConfig.rangeEndExclusive) {
+        upcomingWeekCards.push(card);
+      }
+    });
 
-    const html = `<div class="calendar-agenda"><div class="section-header"><span>TODAY'S AGENDA</span><span class="section-count">${data.cards.length}</span></div>${eventsHtml}</div>`;
+    const byStartTime = (a, b) => {
+      const aStart = parseCalendarDate((Array.isArray(a.proposed_actions) ? a.proposed_actions[0] : null)?.start || a.timestamp);
+      const bStart = parseCalendarDate((Array.isArray(b.proposed_actions) ? b.proposed_actions[0] : null)?.start || b.timestamp);
+      return (aStart?.getTime() || 0) - (bStart?.getTime() || 0);
+    };
+
+    todayCards.sort(byStartTime);
+    upcomingWeekCards.sort(byStartTime);
+
+    const html = `
+      <div class="calendar-agenda">
+        ${renderCalendarSection("TODAY'S AGENDA", todayCards, 'NO EVENTS TODAY')}
+        ${renderCalendarSection(upcomingConfig.label, upcomingWeekCards, upcomingConfig.emptyLabel)}
+      </div>`;
     cacheView(cacheKey, { html });
     if (activeFilter === 'calendar') queue.innerHTML = html;
   } catch (e) {

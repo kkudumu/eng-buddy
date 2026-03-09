@@ -540,7 +540,14 @@ body {
 }
 
 /* CALENDAR AGENDA */
-.calendar-agenda { }
+.calendar-agenda {
+  display: flex;
+  flex-direction: column;
+}
+
+.calendar-section + .calendar-section {
+  border-top: 1px solid #222;
+}
 
 .calendar-event {
   padding: 16px;
@@ -551,9 +558,17 @@ body {
 .calendar-event.high-prio { border-left: 4px solid var(--needs-response); }
 
 .event-time {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+  letter-spacing: 1.2px;
+  margin-bottom: 6px;
+}
+
+.event-title {
   font-size: 14px;
   font-weight: 700;
-  margin-bottom: 6px;
+  margin-bottom: 8px;
 }
 
 .event-context {
@@ -573,6 +588,13 @@ body {
 .event-actions {
   display: flex;
   gap: 8px;
+}
+
+.calendar-empty {
+  padding: 28px 16px;
+  color: #444;
+  letter-spacing: 4px;
+  text-align: center;
 }
 
 /* FILTER SUGGESTIONS */
