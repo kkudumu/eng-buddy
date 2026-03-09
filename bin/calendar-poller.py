@@ -20,6 +20,8 @@ import brain
 BASE_DIR = Path.home() / ".claude" / "eng-buddy"
 DB_PATH = BASE_DIR / "inbox.db"
 STATE_FILE = BASE_DIR / "calendar-poller-state.json"
+CLAUDE_FETCH_TIMEOUT_SECONDS = 120
+CLAUDE_ENRICH_TIMEOUT_SECONDS = 45
 
 
 def load_state():
@@ -45,6 +47,70 @@ def compute_fetch_window(today=None):
     return today, end_date
 
 
+def _claude_env():
+    """Return a clean env for spawning the Claude CLI from eng-buddy."""
+    env = os.environ.copy()
+    env.pop("CLAUDECODE", None)
+    path_parts = ["/opt/homebrew/bin", "/usr/local/bin"]
+    existing_path = env.get("PATH", "")
+    if existing_path:
+        path_parts.append(existing_path)
+    env["PATH"] = ":".join(path_parts)
+    return env
+
+
+def _extract_json_array(text):
+    match = re.search(r"\[.*\]", text, re.DOTALL)
+    if not match:
+        return []
+    try:
+        return json.loads(match.group(0))
+    except json.JSONDecodeError:
+        return []
+
+
+def _build_single_day_prompt(target_date):
+    return (
+        f"Use the Google Calendar MCP list-events tool to get all events for {target_date.isoformat()}. "
+        f"Use calendarId 'primary'. "
+        f"Return ONLY a JSON array of objects with keys: "
+        f"id, summary, start (ISO string), end (ISO string), "
+        f"location, hangout_link (Google Meet/Zoom URL if present), "
+        f"attendees (array of email strings), description (first 200 chars). "
+        f"No prose, just the JSON array."
+    )
+
+
+def _fetch_events_for_date(target_date):
+    """Fetch all events for a single day."""
+    prompt = _build_single_day_prompt(target_date)
+    result = subprocess.run(
+        ["claude", "--dangerously-skip-permissions", "--print", prompt],
+        capture_output=True,
+        text=True,
+        timeout=CLAUDE_FETCH_TIMEOUT_SECONDS,
+        env=_claude_env(),
+    )
+    return _extract_json_array(result.stdout)
+
+
+def _dedupe_events(events):
+    seen = set()
+    deduped = []
+    for event in events:
+        key = (
+            event.get("id"),
+            event.get("start"),
+            event.get("end"),
+            event.get("summary"),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(event)
+    return deduped
+
+
 def format_event_summary(event):
     raw_start = str(event.get("start", "")).strip()
     title = (event.get("summary") or "No title").strip()
@@ -67,26 +133,19 @@ def format_event_summary(event):
 def fetch_events():
     """Use Claude CLI to fetch calendar events for the active weekly horizon."""
     start_date, end_date = compute_fetch_window()
-    prompt = (
-        f"Use the Google Calendar MCP list-events tool to get all events from {start_date.isoformat()} "
-        f"through {end_date.isoformat()} inclusive. "
-        f"Use calendarId 'primary'. "
-        f"Return ONLY a JSON array of objects with keys: "
-        f"id, summary, start (ISO string), end (ISO string), "
-        f"location, hangout_link (Google Meet/Zoom URL if present), "
-        f"attendees (array of email strings), description (first 200 chars). "
-        f"No prose, just the JSON array."
-    )
-    try:
-        result = subprocess.run(
-            ["claude", "--dangerously-skip-permissions", "--print", prompt],
-            capture_output=True, text=True, timeout=30        )
-        match = re.search(r'\[.*\]', result.stdout, re.DOTALL)
-        if match:
-            return json.loads(match.group(0))
-    except Exception as e:
-        print(f"[{datetime.now().strftime('%H:%M')}] Calendar fetch failed: {e}")
-    return []
+    current_date = start_date
+    events = []
+    while current_date <= end_date:
+        try:
+            events.extend(_fetch_events_for_date(current_date))
+        except Exception as e:
+            print(
+                f"[{datetime.now().strftime('%H:%M')}] Calendar fetch failed for "
+                f"{current_date.isoformat()}: {e}"
+            )
+        current_date += timedelta(days=1)
+
+    return _dedupe_events(events)
 
 
 def enrich_events(events):
@@ -112,7 +171,11 @@ Return ONLY a JSON array with the original fields plus context_notes, priority, 
     try:
         result = subprocess.run(
             ["claude", "--dangerously-skip-permissions", "--print", prompt],
-            capture_output=True, text=True, timeout=45        )
+            capture_output=True,
+            text=True,
+            timeout=CLAUDE_ENRICH_TIMEOUT_SECONDS,
+            env=_claude_env(),
+        )
         match = re.search(r'\[.*\]', result.stdout, re.DOTALL)
         if match:
             enriched = json.loads(match.group(0))
@@ -187,7 +250,7 @@ def main():
         write_to_db(events)
         print(f"[{now.strftime('%H:%M')}] Wrote {len(events)} calendar cards to inbox.db")
     else:
-        print(f"[{now.strftime('%H:%M')}] No events found for today")
+        print(f"[{now.strftime('%H:%M')}] No events found in the current weekly horizon")
 
     state["last_fetch"] = current_slot
     save_state(state)

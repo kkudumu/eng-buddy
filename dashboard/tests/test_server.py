@@ -3,6 +3,8 @@ import pytest
 from pathlib import Path
 import sqlite3
 import subprocess
+import sys
+import types
 from datetime import datetime, timedelta, timezone
 from httpx import AsyncClient, ASGITransport
 import migrate as migrate_module
@@ -230,6 +232,121 @@ async def test_get_cards_calendar_defaults_to_all_statuses(tmp_path, monkeypatch
     assert r.status_code == 200
     cards = r.json()["cards"]
     assert [card["summary"] for card in cards] == ["Pending meeting", "Held meeting"]
+
+
+@pytest.mark.asyncio
+async def test_get_briefing_uses_calendar_cards_for_meetings(tmp_path, monkeypatch):
+    today = datetime.now().date()
+    tomorrow = today + timedelta(days=1)
+    db_path = tmp_path / "inbox.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """CREATE TABLE cards (
+            id INTEGER PRIMARY KEY,
+            source TEXT,
+            timestamp TEXT,
+            summary TEXT,
+            classification TEXT,
+            status TEXT,
+            proposed_actions TEXT,
+            section TEXT,
+            draft_response TEXT,
+            context_notes TEXT
+        )"""
+    )
+    conn.execute(
+        """CREATE TABLE briefings (
+            date TEXT PRIMARY KEY,
+            content TEXT NOT NULL,
+            generated_at TEXT NOT NULL
+        )"""
+    )
+    conn.execute(
+        """CREATE TABLE stats (
+            date TEXT NOT NULL,
+            metric TEXT NOT NULL,
+            value INTEGER NOT NULL
+        )"""
+    )
+    conn.execute(
+        """INSERT INTO cards
+           (id, source, timestamp, summary, classification, status, proposed_actions, section, draft_response, context_notes)
+           VALUES (?, 'calendar', ?, 'Sprint Planning', 'normal', 'pending', ?, 'needs-action', '', ?)""",
+        (
+            1,
+            f"{today.isoformat()}T14:30:00+00:00",
+            json.dumps(
+                [
+                    {
+                        "summary": "Sprint Planning",
+                        "start": f"{today.isoformat()}T07:30:00-07:00",
+                        "end": f"{today.isoformat()}T08:00:00-07:00",
+                        "attendees": ["team@example.com"],
+                        "hangout_link": "https://meet.example.com/abc",
+                    }
+                ]
+            ),
+            "Review blockers before kickoff",
+        ),
+    )
+    conn.execute(
+        """INSERT INTO cards
+           (id, source, timestamp, summary, classification, status, proposed_actions, section, draft_response, context_notes)
+           VALUES (?, 'calendar', ?, 'Home', 'normal', 'pending', ?, 'no-action', '', '')""",
+        (
+            2,
+            f"{today.isoformat()}T00:00:00+00:00",
+            json.dumps(
+                [
+                    {
+                        "summary": "Home",
+                        "start": today.isoformat(),
+                        "end": tomorrow.isoformat(),
+                        "attendees": [],
+                    }
+                ]
+            ),
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr(server, "DB_PATH", db_path)
+    monkeypatch.setitem(sys.modules, "brain", types.SimpleNamespace(build_context_prompt=lambda: "CTX"))
+    monkeypatch.setattr(
+        server,
+        "_run_claude_print",
+        lambda prompt, timeout=60: subprocess.CompletedProcess(
+            args=["claude"],
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "date": today.isoformat(),
+                    "meetings": [],
+                    "needs_response": [],
+                    "alerts": [],
+                    "cognitive_load": {"level": "MODERATE", "meeting_count": 0, "action_count": 1},
+                    "stats": {},
+                    "heads_up": [],
+                }
+            ),
+            stderr="",
+        ),
+    )
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r = await client.get("/api/briefing?regenerate=true")
+
+    assert r.status_code == 200
+    payload = r.json()
+    assert payload["meetings"] == [
+        {
+            "time": "07:30",
+            "title": "Sprint Planning",
+            "prep": "Review blockers before kickoff",
+        }
+    ]
+    assert payload["cognitive_load"]["meeting_count"] == 1
 
 @pytest.mark.asyncio
 async def test_card_has_required_fields():

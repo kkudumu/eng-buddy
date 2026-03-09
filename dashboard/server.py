@@ -224,6 +224,94 @@ def _extract_balanced_json(text: str, opening: str):
                         break
     return None
 
+
+def _parse_isoish_datetime(value: str):
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+
+    try:
+        if "T" in raw:
+            return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        return datetime.strptime(raw, "%Y-%m-%d")
+    except ValueError:
+        return None
+
+
+def _calendar_event_looks_like_meeting(event: dict) -> bool:
+    start = str(event.get("start") or "").strip()
+    if "T" in start:
+        return True
+    return bool(
+        event.get("attendees")
+        or event.get("hangout_link")
+        or event.get("location")
+    )
+
+
+def _format_briefing_meeting(card: sqlite3.Row, target_date: date):
+    try:
+        proposed_actions = json.loads(card["proposed_actions"] or "[]")
+    except (TypeError, json.JSONDecodeError):
+        proposed_actions = []
+
+    event = proposed_actions[0] if proposed_actions else {}
+    if not isinstance(event, dict):
+        event = {}
+
+    start_value = event.get("start") or card["timestamp"]
+    start_dt = _parse_isoish_datetime(start_value)
+    if not start_dt:
+        return None
+
+    local_dt = start_dt.astimezone() if start_dt.tzinfo else start_dt
+    if local_dt.date() != target_date:
+        return None
+    if not _calendar_event_looks_like_meeting(event):
+        return None
+
+    prep = (card["context_notes"] or "").strip()
+    meeting = {
+        "time": local_dt.strftime("%H:%M") if "T" in str(start_value) else "ALL DAY",
+        "title": (event.get("summary") or card["summary"] or "").strip(),
+    }
+    if prep:
+        meeting["prep"] = prep
+    return meeting
+
+
+def _load_briefing_calendar_meetings(conn: sqlite3.Connection, target_date: date):
+    rows = conn.execute(
+        """SELECT timestamp, summary, context_notes, proposed_actions
+           FROM cards
+           WHERE source = 'calendar'
+           ORDER BY timestamp ASC"""
+    ).fetchall()
+
+    meetings = []
+    for row in rows:
+        meeting = _format_briefing_meeting(row, target_date)
+        if meeting:
+            meetings.append(meeting)
+
+    meetings.sort(key=lambda meeting: (meeting.get("time") == "ALL DAY", meeting.get("time") or ""))
+    return meetings
+
+
+def _briefing_meeting_signature(meetings):
+    signature = []
+    for meeting in meetings or []:
+        if not isinstance(meeting, dict):
+            continue
+        signature.append(
+            (
+                meeting.get("time") or "",
+                meeting.get("title") or "",
+                meeting.get("prep") or "",
+            )
+        )
+    return signature
+
 def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -3950,17 +4038,22 @@ async def cache_invalidate(body: dict):
 async def get_briefing(regenerate: bool = False):
     """Generate or return cached morning briefing."""
     from datetime import date, timedelta
-    today = date.today().isoformat()
+    today_date = date.today()
+    today = today_date.isoformat()
 
     conn = get_db()
     try:
+        calendar_meetings = _load_briefing_calendar_meetings(conn, today_date)
+
         # Check cache
         if not regenerate:
             row = conn.execute(
                 "SELECT content FROM briefings WHERE date = ?", [today]
             ).fetchone()
             if row:
-                return json.loads(row[0])
+                cached = json.loads(row[0])
+                if _briefing_meeting_signature(cached.get("meetings")) == _briefing_meeting_signature(calendar_meetings):
+                    return cached
 
         # Gather data for briefing
         pending_cards = conn.execute(
@@ -3968,7 +4061,7 @@ async def get_briefing(regenerate: bool = False):
         ).fetchall()
 
         # Get yesterday's stats
-        yesterday = (date.today() - timedelta(days=1)).isoformat()
+        yesterday = (today_date - timedelta(days=1)).isoformat()
         stats = conn.execute(
             "SELECT metric, SUM(value) FROM stats WHERE date = ? GROUP BY metric", [yesterday]
         ).fetchall()
@@ -3990,6 +4083,9 @@ Generate a morning briefing for today ({today}). You have:
 
 PENDING CARDS:
 {json.dumps(cards_data, indent=2)}
+
+TODAY'S CALENDAR MEETINGS:
+{json.dumps(calendar_meetings, indent=2)}
 
 YESTERDAY'S STATS:
 {json.dumps(stats_data, indent=2)}
@@ -4021,6 +4117,15 @@ Return ONLY the JSON. No prose."""
                 briefing = {"error": "Failed to generate briefing", "raw": result.stdout[:500]}
     except Exception as e:
         briefing = {"error": str(e)}
+
+    if not briefing.get("error"):
+        briefing["date"] = today
+        briefing["meetings"] = calendar_meetings
+        cognitive_load = briefing.get("cognitive_load")
+        if not isinstance(cognitive_load, dict):
+            cognitive_load = {}
+            briefing["cognitive_load"] = cognitive_load
+        cognitive_load["meeting_count"] = len(calendar_meetings)
 
     # Cache it
     conn = get_db()
