@@ -68,6 +68,11 @@ function sectionDomId(name) {
   return String(name || 'section').toLowerCase().replace(/[^a-z0-9]+/g, '-');
 }
 
+function extractJiraKey(value) {
+  const match = String(value || '').toUpperCase().match(/\b[A-Z][A-Z0-9]+-\d+\b/);
+  return match ? match[0] : '';
+}
+
 function cacheIsFresh(entry) {
   return !!entry && (Date.now() - entry.fetchedAt) < TAB_CACHE_TTL_MS;
 }
@@ -293,39 +298,28 @@ async function captureFailureFeedback(entityType, entityId, action, errorMessage
 
 // -- Card rendering -----------------------------------------------------------
 
-function renderCard(card) {
+function renderCardActions(cardId) {
+  return `
+      <button class="action-btn open-session" onclick="openSession(${cardId})">OPEN SESSION</button>
+      <button class="action-btn refine" onclick="toggleRefine(${cardId})">REFINE</button>
+      <button class="action-btn hold" onclick="holdCard(${cardId})">HOLD</button>
+      <button class="action-btn approve" onclick="approveCard(${cardId})">APPROVE</button>
+      <button class="action-btn" onclick="closeCard(${cardId}, this)">CLOSE</button>
+      <button class="action-btn" onclick="writeCardToJira(${cardId}, this)">WRITE TO JIRA</button>
+      <button class="action-btn hold" onclick="saveCardToDailyLog(${cardId}, this)">SAVE TO DAILY LOG</button>
+  `;
+}
+
+function renderCardFoldout(card) {
   const actions = Array.isArray(card.proposed_actions)
     ? card.proposed_actions
     : [];
-  const actionCount = actions.length;
   const foldoutId = `foldout-${card.id}`;
   const xtermId = `xterm-${card.id}`;
   const refineId = `refine-${card.id}`;
-
   const actionsHtml = actions.map((a, i) => renderAction(a, i)).join('');
 
   return `
-  <div class="card ${card.status}" id="card-${card.id}" data-source="${card.source}" data-id="${card.id}">
-    <div class="card-header" onclick="toggleFoldout(${card.id})">
-      <div class="card-meta">
-        ${sourceBadge(card.source)}
-        ${classBadge(card.classification)}
-      </div>
-      <div class="card-summary">${escHtml(card.summary || '(no summary)')}</div>
-      <div class="card-time">${timeAgo(card.timestamp)}</div>
-      <div class="card-toggle" id="toggle-${card.id}">${actionCount} action${actionCount !== 1 ? 's' : ''} &#9660;</div>
-    </div>
-
-    <div class="card-actions">
-      <button class="action-btn open-session" onclick="openSession(${card.id})">OPEN SESSION</button>
-      <button class="action-btn refine" onclick="toggleRefine(${card.id})">REFINE</button>
-      <button class="action-btn hold" onclick="holdCard(${card.id})">HOLD</button>
-      <button class="action-btn approve" onclick="approveCard(${card.id})">APPROVE</button>
-      <button class="action-btn" onclick="closeCard(${card.id}, this)">CLOSE</button>
-      <button class="action-btn" onclick="writeCardToJira(${card.id}, this)">WRITE TO JIRA</button>
-      <button class="action-btn hold" onclick="saveCardToDailyLog(${card.id}, this)">SAVE TO DAILY LOG</button>
-    </div>
-
     <div class="card-foldout" id="${foldoutId}">
       <div class="proposed-actions" id="proposed-${card.id}">
         <h4>Proposed Actions</h4>
@@ -347,6 +341,29 @@ function renderCard(card) {
 
       <div id="${xtermId}" class="xterm-container" style="display:none;"></div>
     </div>
+  `;
+}
+
+function renderCard(card) {
+  const actions = Array.isArray(card.proposed_actions)
+    ? card.proposed_actions
+    : [];
+  const actionCount = actions.length;
+
+  return `
+  <div class="card ${card.status}" id="card-${card.id}" data-source="${card.source}" data-id="${card.id}">
+    <div class="card-header" onclick="toggleFoldout(${card.id})">
+      <div class="card-meta">
+        ${sourceBadge(card.source)}
+        ${classBadge(card.classification)}
+      </div>
+      <div class="card-summary">${escHtml(card.summary || '(no summary)')}</div>
+      <div class="card-time">${timeAgo(card.timestamp)}</div>
+      <div class="card-toggle" id="toggle-${card.id}">${actionCount} action${actionCount !== 1 ? 's' : ''} &#9660;</div>
+    </div>
+
+    <div class="card-actions">${renderCardActions(card.id)}</div>
+    ${renderCardFoldout(card)}
   </div>`;
 }
 
@@ -966,30 +983,84 @@ async function sendRefine(id) {
 
 // -- Jira + Tasks Views -------------------------------------------------------
 
-function statusColor(status) {
-  const s = (status || '').toLowerCase();
-  if (s.includes('done')) return 'var(--fresh)';
-  if (s.includes('progress') || s.includes('review')) return 'var(--jira)';
-  return 'var(--muted)';
+function extractJiraKeyFromCard(card) {
+  const candidates = [
+    card.summary,
+    card.context_notes,
+    ...(Array.isArray(card.proposed_actions) ? card.proposed_actions.flatMap((action) => [action?.url, action?.draft]) : []),
+  ];
+  return candidates.map(extractJiraKey).find(Boolean) || '';
 }
 
-function renderJiraIssue(issue) {
+function buildJiraCardLookup(cards) {
+  const lookup = {};
+  cards.forEach((card) => {
+    const key = extractJiraKeyFromCard(card);
+    if (key && !lookup[key]) {
+      lookup[key] = card;
+    }
+  });
+  return lookup;
+}
+
+function renderJiraIssueFallback(issue) {
   const labels = (issue.labels || []).map(l => `<span class="jira-label">${escHtml(l)}</span>`).join('');
   const prio = (issue.priority || '').toLowerCase();
-  const prioIcon = prio.includes('high') ? '!!!' : prio.includes('low') ? '.' : '!!';
+  const priorityClass = prio.includes('high') ? 'cls-urgent' : 'cls-informational';
   return `
-    <div class="jira-issue" data-key="${issue.key}">
-      <div class="jira-issue-key">${escHtml(issue.key)}</div>
-      <div class="jira-issue-summary">${escHtml(issue.summary)}</div>
-      <div class="jira-issue-meta">
-        <span class="jira-status" style="color:${statusColor(issue.status)}">${escHtml(issue.status)}</span>
-        <span class="jira-prio">${prioIcon}</span>
-        ${labels}
+    <div class="card jira-card jira-card-unsynced" data-key="${escHtml(issue.key || '')}">
+      <div class="card-header">
+        <div class="card-meta">
+          ${sourceBadge('jira')}
+          <span class="badge cls-informational">${escHtml(issue.key || 'JIRA')}</span>
+          <span class="badge cls-informational">${escHtml(issue.status || 'Unknown').toUpperCase()}</span>
+          <span class="badge ${priorityClass}">${escHtml(issue.priority || 'unknown').toUpperCase()}</span>
+        </div>
+        <div class="card-summary">${escHtml(issue.summary || '(no summary)')}</div>
+        <div class="card-time">${timeAgo(issue.updated)}</div>
       </div>
+      ${labels ? `<div class="jira-card-details"><div class="jira-issue-meta">${labels}</div></div>` : ''}
+      <div class="card-context jira-card-context">This Jira issue is visible in the sprint, but it has not been synced to a dashboard card yet, so card actions are not available.</div>
     </div>`;
 }
 
-function renderStatusSections(sectionMap, order, emptyLabel) {
+function renderJiraIssueCard(issue, linkedCard) {
+  if (!linkedCard || linkedCard.id == null) {
+    return renderJiraIssueFallback(issue);
+  }
+
+  const labels = (issue.labels || []).map((label) => `<span class="jira-label">${escHtml(label)}</span>`).join('');
+  const actionCount = Array.isArray(linkedCard.proposed_actions) ? linkedCard.proposed_actions.length : 0;
+  const mergedSummary = issue.summary || linkedCard.summary || '(no summary)';
+  const mergedTime = issue.updated || linkedCard.timestamp;
+  const priority = issue.priority || linkedCard.classification || 'unknown';
+  const context = linkedCard.context_notes ? `<div class="card-context jira-card-context">${escHtml(linkedCard.context_notes)}</div>` : '';
+  const priorityClass = String(priority).toLowerCase().includes('high') ? 'cls-urgent' : 'cls-informational';
+
+  return `
+    <div class="card jira-card ${linkedCard.status}" id="card-${linkedCard.id}" data-source="${linkedCard.source}" data-id="${linkedCard.id}" data-key="${escHtml(issue.key || '')}">
+      <div class="card-header" onclick="toggleFoldout(${linkedCard.id})">
+        <div class="card-meta">
+          ${sourceBadge('jira')}
+          <span class="badge cls-informational">${escHtml(issue.key || extractJiraKeyFromCard(linkedCard) || 'JIRA')}</span>
+          <span class="badge cls-informational">${escHtml(issue.status || 'Unknown').toUpperCase()}</span>
+          <span class="badge ${priorityClass}">${escHtml(priority).toUpperCase()}</span>
+        </div>
+        <div class="card-summary">${escHtml(mergedSummary)}</div>
+        <div class="card-time">${timeAgo(mergedTime)}</div>
+        <div class="card-toggle" id="toggle-${linkedCard.id}">${actionCount} action${actionCount !== 1 ? 's' : ''} &#9660;</div>
+      </div>
+      ${(labels || context) ? `<div class="jira-card-details">
+        ${labels ? `<div class="jira-issue-meta">${labels}</div>` : ''}
+        ${context}
+      </div>` : ''}
+      <div class="card-actions jira-card-actions">${renderCardActions(linkedCard.id)}</div>
+      ${renderCardFoldout(linkedCard)}
+    </div>
+  `;
+}
+
+function renderStatusSections(sectionMap, order, jiraCardLookup, emptyLabel) {
   if (!order.length) {
     return `<div class="section-empty">${emptyLabel}</div>`;
   }
@@ -1005,7 +1076,7 @@ function renderStatusSections(sectionMap, order, emptyLabel) {
           <span class="section-toggle" id="toggle-${sectionDomId(sectionKey)}">&#9660;</span>
         </div>
         <div class="section-body" id="section-${sectionDomId(sectionKey)}">
-          ${items.map(renderJiraIssue).join('') || '<div class="section-empty">None</div>'}
+          ${items.map((issue) => renderJiraIssueCard(issue, jiraCardLookup[extractJiraKey(issue.key)])).join('') || '<div class="section-empty">None</div>'}
         </div>
       </div>
     `;
@@ -1018,6 +1089,7 @@ async function loadJiraStatusView(options = {}) {
   const cached = getCachedView(cacheKey);
 
   if (cached) {
+    setCounts(cached.counts || {});
     queue.innerHTML = cached.html;
     if (!options.forceRefresh && cacheIsFresh(cached)) return;
   } else {
@@ -1025,12 +1097,19 @@ async function loadJiraStatusView(options = {}) {
   }
 
   try {
-    const r = await fetch(`/api/jira/sprint?refresh=${options.forceRefresh ? 'true' : 'false'}`);
-    const data = await r.json();
+    const [sprintR, cardsR] = await Promise.all([
+      fetch(`/api/jira/sprint?refresh=${options.forceRefresh ? 'true' : 'false'}`),
+      fetch('/api/cards?source=jira&status=all'),
+    ]);
+    const data = await sprintR.json();
+    const cardsData = await cardsR.json();
     const sectionMap = data.by_status || {};
     const order = data.status_order || Object.keys(sectionMap);
-    const html = renderStatusSections(sectionMap, order, 'No Jira issues found');
-    cacheView(cacheKey, { html });
+    const jiraCards = Array.isArray(cardsData.cards) ? cardsData.cards : [];
+    const jiraCardLookup = buildJiraCardLookup(jiraCards);
+    const html = renderStatusSections(sectionMap, order, jiraCardLookup, 'No Jira issues found');
+    setCounts(cardsData.counts || {});
+    cacheView(cacheKey, { html, counts: cardsData.counts || {} });
     if (activeFilter === 'jira') queue.innerHTML = html;
   } catch (e) {
     if (!cached) {

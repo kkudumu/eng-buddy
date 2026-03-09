@@ -264,6 +264,13 @@ body {
   padding-top: 12px;
 }
 
+.jira-card-actions {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  border-top: 1px solid #222;
+  padding-top: 12px;
+}
+
 .task-jira-keys {
   display: flex;
   gap: 8px;
@@ -429,6 +436,29 @@ body {
   transition: background 0.1s;
 }
 .jira-issue:hover { background: #222; }
+
+.jira-card {
+  margin-bottom: 12px;
+}
+
+.jira-card-unsynced {
+  opacity: 0.8;
+}
+
+.jira-card-details {
+  padding: 0 16px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.jira-card-context {
+  margin: 0 16px 12px;
+}
+
+.jira-card-details .jira-card-context {
+  margin: 0;
+}
 
 .jira-issue-key {
   font-size: 10px;
