@@ -16,7 +16,6 @@
       <span class="count-badge" id="count-pending">— pending</span>
       <span class="count-badge held" id="count-held">— held</span>
       <span class="count-badge running" id="count-running">— running</span>
-      <div id="poller-timers" aria-live="polite"></div>
     </div>
     <div id="header-settings">
       <label for="terminal-select" class="terminal-label">TERMINAL</label>
@@ -27,7 +26,6 @@
         <option value="Alacritty">Alacritty</option>
         <option value="kitty">kitty</option>
       </select>
-      <button id="restart-btn" class="restart-btn" title="Restart dashboard server">RESTART</button>
     </div>
   </header>
 
@@ -42,7 +40,6 @@
     <button class="filter-btn" data-source="daily">DAILY</button>
     <button class="filter-btn" data-source="learnings">LEARNINGS</button>
     <button class="filter-btn" data-source="knowledge">KNOWLEDGE</button>
-    <button class="filter-btn" data-source="suggestions">SUGGESTIONS</button>
   </nav>
 
   <main id="queue"></main>

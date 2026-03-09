@@ -23,8 +23,7 @@ MIGRATIONS = [
         context_notes TEXT,
         responded INTEGER DEFAULT 0,
         filter_suggested INTEGER DEFAULT 0,
-        refinement_history TEXT,
-        analysis_metadata TEXT
+        refinement_history TEXT
     )""",
     # New columns for smart classification
     "ALTER TABLE cards ADD COLUMN section TEXT DEFAULT 'needs-action'",
@@ -32,7 +31,6 @@ MIGRATIONS = [
     "ALTER TABLE cards ADD COLUMN context_notes TEXT",
     "ALTER TABLE cards ADD COLUMN responded INTEGER DEFAULT 0",
     "ALTER TABLE cards ADD COLUMN filter_suggested INTEGER DEFAULT 0",
-    "ALTER TABLE cards ADD COLUMN analysis_metadata TEXT",
     # Stats table
     """CREATE TABLE IF NOT EXISTS stats (
         id INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -10,7 +10,7 @@ import re
 import sqlite3
 import subprocess
 import sys
-from datetime import datetime, date, timedelta, timezone
+from datetime import datetime, date, timezone
 from pathlib import Path
 
 # Allow importing brain.py from same directory
@@ -35,45 +35,11 @@ def save_state(state):
     STATE_FILE.write_text(json.dumps(state, indent=2))
 
 
-def compute_fetch_window(today=None):
-    """Fetch from today through the active weekly horizon.
-
-    Sunday rolls forward to include the following Monday-Sunday week so the
-    dashboard can show "today" separately from "upcoming this week".
-    """
-    today = today or date.today()
-    if today.weekday() == 6:  # Sunday
-        end_date = today + timedelta(days=7)
-    else:
-        end_date = today + timedelta(days=(6 - today.weekday()))
-    return today, end_date
-
-
-def format_event_summary(event):
-    raw_start = str(event.get("start", "")).strip()
-    title = (event.get("summary") or "No title").strip()
-
-    if raw_start:
-        try:
-            if "T" in raw_start:
-                start_dt = datetime.fromisoformat(raw_start.replace("Z", "+00:00"))
-                label = start_dt.strftime("%a %m/%d %H:%M")
-            else:
-                start_day = datetime.strptime(raw_start, "%Y-%m-%d")
-                label = f"{start_day.strftime('%a %m/%d')} ALL DAY"
-            return f"{label} — {title}"
-        except ValueError:
-            pass
-
-    return title
-
-
 def fetch_events():
-    """Use Claude CLI to fetch calendar events for the active weekly horizon."""
-    start_date, end_date = compute_fetch_window()
+    """Use Claude CLI to fetch today's calendar events via Google Calendar MCP."""
+    today = date.today().isoformat()
     prompt = (
-        f"Use the Google Calendar MCP list-events tool to get all events from {start_date.isoformat()} "
-        f"through {end_date.isoformat()} inclusive. "
+        f"Use the Google Calendar MCP list-events tool to get all events for today ({today}). "
         f"Use calendarId 'primary'. "
         f"Return ONLY a JSON array of objects with keys: "
         f"id, summary, start (ISO string), end (ISO string), "
@@ -103,7 +69,7 @@ def enrich_events(events):
 
     prompt = f"""{context}
 
-Here are the calendar events in scope. For each, add:
+Here are today's calendar events. For each, add:
 - context_notes: Relevant context from Jira tickets, recent emails, or Slack threads related to the meeting topic or attendees. Include prep suggestions.
 - priority: "high" (needs prep), "normal", or "low" (social/optional)
 - prep_needed: true/false
@@ -134,18 +100,19 @@ def write_to_db(events):
         return
 
     conn = sqlite3.connect(DB_PATH)
+    today = date.today().isoformat()
 
-    # Rewrite the calendar horizon each run so the dashboard always reflects the
-    # current week/next-week window without stale events lingering.
-    conn.execute("DELETE FROM cards WHERE source = 'calendar'")
+    # Clear today's calendar cards and rewrite (events may have changed)
+    conn.execute(
+        "DELETE FROM cards WHERE source = 'calendar' AND date(timestamp) = ?",
+        [today]
+    )
 
     for event in events:
-        event_start = event.get("start") or datetime.now(timezone.utc).isoformat()
-        summary = format_event_summary(event)
+        summary = f"{event.get('start', '?')[:5]} — {event.get('summary', 'No title')}"
         section = "needs-action" if event.get("prep_needed") else "no-action"
         proposed = json.dumps([{
             "type": "calendar_event",
-            "id": event.get("id", ""),
             "summary": event.get("summary", ""),
             "start": event.get("start", ""),
             "end": event.get("end", ""),
@@ -158,7 +125,7 @@ def write_to_db(events):
                 proposed_actions, execution_status, section, context_notes)
                VALUES ('calendar', ?, ?, ?, 'pending', ?, 'not_run', ?, ?)""",
             (
-                event_start,
+                datetime.now(timezone.utc).isoformat(),
                 summary,
                 event.get("priority", "normal"),
                 proposed,
