@@ -1,0 +1,111 @@
+/* Soft Kitty — Kawaii dark */
+@import url('https://fonts.googleapis.com/css2?family=Patrick+Hand&family=Comfortaa:wght@400;700&display=swap');
+
+:root {
+  /* Core */
+  --bg: #1a1528;
+  --card-bg: #241e35;
+  --surface: #1f1830;
+  --surface-alt: #2a2240;
+  --border: #f4a8c8;
+  --border-subtle: #3d2f5a;
+  --border-faint: #2f2548;
+  --hover-bg: #2f2548;
+  --text: #f0e6f6;
+  --muted: #9b8bb5;
+  --overlay-bg: rgba(26, 21, 40, 0.9);
+
+  /* Typography */
+  --font: 'Comfortaa', sans-serif;
+  --font-heading: 'Patrick Hand', cursive;
+
+  /* Shape */
+  --radius: 16px;
+  --radius-sm: 10px;
+  --transition-speed: 0.2s;
+
+  /* Shadows — soft pastel glows */
+  --shadow: 3px 3px 12px rgba(244, 168, 200, 0.2);
+  --shadow-sm: 2px 2px 8px rgba(244, 168, 200, 0.15);
+  --shadow-hover: 4px 4px 18px rgba(244, 168, 200, 0.3);
+
+  /* Source colors — pastel variants */
+  --fresh: #7ddfb0;
+  --jira: #8bb8f4;
+  --slack: #f4889a;
+  --gmail: #f4887a;
+  --urgent: #f0e6f6;
+  --needs-response: #f4e078;
+
+  /* Debug */
+  --debug-info: #8bb8f4;
+  --debug-error: #f4887a;
+  --debug-surface: rgba(26, 21, 40, 0.97);
+
+  /* Patterns */
+  --held-stripe: repeating-linear-gradient(
+    45deg, #2f2548, #2f2548 4px, #241e35 4px, #241e35 8px
+  );
+}
+
+/* Kawaii overrides — doodle borders */
+.card {
+  border-style: dashed;
+  border-width: 2.5px;
+}
+
+.card:hover {
+  transform: translateY(-2px);
+}
+
+.filter-btn.active {
+  border-bottom: 3px dashed var(--text);
+}
+
+#header {
+  border-bottom-style: dashed;
+}
+
+#filter-bar {
+  border-bottom-style: dashed;
+}
+
+.debug-drawer {
+  border-style: dashed;
+  box-shadow: 4px 4px 16px rgba(244, 168, 200, 0.15);
+}
+
+.badge {
+  border-radius: 999px;
+}
+
+.action-btn {
+  border-style: dashed;
+  border-radius: 999px;
+  padding: 8px 20px;
+}
+
+.count-badge {
+  border-style: dashed;
+  border-radius: 999px;
+}
+
+.section-header {
+  border-bottom-style: dashed;
+  letter-spacing: 2px;
+}
+
+#header-title {
+  font-family: var(--font-heading);
+  font-size: 24px;
+  letter-spacing: 2px;
+}
+
+.briefing-title {
+  font-family: var(--font-heading);
+}
+
+.briefing-modal {
+  border-style: dashed;
+  box-shadow: 4px 4px 16px rgba(244, 168, 200, 0.2);
+}

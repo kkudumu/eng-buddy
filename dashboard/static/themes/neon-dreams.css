@@ -1,0 +1,190 @@
+/* Neon Dreams — Vaporwave dark */
+@import url('https://fonts.googleapis.com/css2?family=VT323&family=JetBrains+Mono:wght@400;700;800&display=swap');
+
+:root {
+  /* Core */
+  --bg: #0d0221;
+  --card-bg: #150535;
+  --surface: #120430;
+  --surface-alt: #1a0840;
+  --border: #ff71ce;
+  --border-subtle: #2a1060;
+  --border-faint: #1f0850;
+  --hover-bg: #1f0850;
+  --text: #e0d0ff;
+  --muted: #7a60a8;
+  --overlay-bg: rgba(13, 2, 33, 0.92);
+
+  /* Typography */
+  --font: 'JetBrains Mono', monospace;
+  --font-heading: 'VT323', monospace;
+
+  /* Shape */
+  --radius: 0px;
+  --radius-sm: 0px;
+  --transition-speed: 0.15s;
+
+  /* Shadows — neon glows */
+  --shadow: 0 0 10px rgba(255, 113, 206, 0.4), 0 0 30px rgba(255, 113, 206, 0.1);
+  --shadow-sm: 0 0 6px rgba(255, 113, 206, 0.3);
+  --shadow-hover: 0 0 20px rgba(255, 113, 206, 0.6), 0 0 40px rgba(1, 205, 254, 0.2);
+
+  /* Source colors — neon variants */
+  --fresh: #05ffa1;
+  --jira: #01cdfe;
+  --slack: #ff71ce;
+  --gmail: #ff6b6b;
+  --urgent: #ffffff;
+  --needs-response: #fffb96;
+
+  /* Debug */
+  --debug-info: #01cdfe;
+  --debug-error: #ff6b6b;
+  --debug-surface: rgba(13, 2, 33, 0.97);
+
+  /* Patterns */
+  --held-stripe: repeating-linear-gradient(
+    45deg, #1f0850, #1f0850 4px, #150535 4px, #150535 8px
+  );
+
+  /* Neon-specific */
+  --neon-pink: #ff71ce;
+  --neon-cyan: #01cdfe;
+  --neon-green: #05ffa1;
+  --neon-yellow: #fffb96;
+  --neon-purple: #b967ff;
+}
+
+/* Grid background */
+body {
+  background-image:
+    linear-gradient(rgba(1, 205, 254, 0.06) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(1, 205, 254, 0.06) 1px, transparent 1px);
+  background-size: 40px 40px;
+}
+
+/* Scanline overlay */
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0, 0, 0, 0.06) 2px,
+    rgba(0, 0, 0, 0.06) 4px
+  );
+  pointer-events: none;
+  z-index: 9999;
+}
+
+/* Retro window card style */
+.card {
+  border: 2px solid var(--neon-pink);
+  position: relative;
+}
+
+.card::before {
+  content: '';
+  display: block;
+  height: 22px;
+  background: linear-gradient(90deg, var(--neon-pink), var(--neon-purple), var(--neon-cyan));
+  margin: -1px -1px 0 -1px;
+  border-bottom: 1px solid var(--neon-pink);
+}
+
+.card:hover {
+  border-color: var(--neon-cyan);
+}
+
+.card.running {
+  border-color: var(--neon-green);
+  box-shadow: 0 0 15px rgba(5, 255, 161, 0.4);
+}
+
+.card.running::before {
+  background: linear-gradient(90deg, var(--neon-green), var(--neon-cyan), var(--neon-green));
+}
+
+/* Chrome gradient header text */
+#header-title {
+  font-family: var(--font-heading);
+  font-size: 28px;
+  letter-spacing: 6px;
+  background: linear-gradient(180deg, #ff71ce, #b967ff, #01cdfe);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  animation: neon-flicker 4s infinite;
+}
+
+/* Neon glow on interactive elements */
+.action-btn {
+  border-color: var(--neon-pink);
+  color: var(--neon-pink);
+  box-shadow: var(--shadow-sm);
+  text-shadow: 0 0 8px rgba(255, 113, 206, 0.3);
+}
+
+.action-btn:hover {
+  background: var(--neon-pink);
+  color: var(--bg);
+  box-shadow: 0 0 20px rgba(255, 113, 206, 0.6);
+  text-shadow: none;
+}
+
+.action-btn.approve {
+  border-color: var(--neon-green);
+  color: var(--neon-green);
+  text-shadow: 0 0 8px rgba(5, 255, 161, 0.3);
+}
+
+.action-btn.approve:hover {
+  background: var(--neon-green);
+  color: var(--bg);
+  box-shadow: 0 0 20px rgba(5, 255, 161, 0.6);
+}
+
+.filter-btn.active {
+  border-bottom: 3px solid var(--neon-cyan);
+  color: var(--neon-cyan);
+  text-shadow: 0 0 8px rgba(1, 205, 254, 0.4);
+}
+
+/* Glow pulse on running badge */
+.count-badge.running {
+  box-shadow: 0 0 10px rgba(5, 255, 161, 0.5);
+}
+
+/* Neon debug drawer */
+.debug-drawer {
+  border-color: var(--neon-purple);
+  box-shadow: 0 0 20px rgba(185, 103, 255, 0.2);
+}
+
+/* Briefing modal */
+.briefing-modal {
+  border-color: var(--neon-cyan);
+  box-shadow: 0 0 30px rgba(1, 205, 254, 0.3);
+}
+
+.briefing-title {
+  font-family: var(--font-heading);
+  font-size: 24px;
+}
+
+/* Section headers */
+.section-header {
+  border-bottom-color: var(--border-subtle);
+  text-shadow: 0 0 6px rgba(185, 103, 255, 0.3);
+}
+
+@keyframes neon-flicker {
+  0%, 100% { opacity: 1; }
+  92% { opacity: 1; }
+  93% { opacity: 0.8; }
+  94% { opacity: 1; }
+  96% { opacity: 0.9; }
+  97% { opacity: 1; }
+}

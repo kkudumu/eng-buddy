@@ -1,0 +1,49 @@
+/* Midnight Ops — Neo-brutalist dark */
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700;800&display=swap');
+
+:root {
+  /* Core */
+  --bg: #0f0f0f;
+  --card-bg: #1a1a1a;
+  --surface: #111111;
+  --surface-alt: #151515;
+  --border: #ffffff;
+  --border-subtle: #333333;
+  --border-faint: #222222;
+  --hover-bg: #222222;
+  --text: #ffffff;
+  --muted: #888888;
+  --overlay-bg: rgba(0, 0, 0, 0.85);
+
+  /* Typography */
+  --font: 'JetBrains Mono', monospace;
+  --font-heading: 'JetBrains Mono', monospace;
+
+  /* Shape */
+  --radius: 0px;
+  --radius-sm: 0px;
+  --transition-speed: 0.1s;
+
+  /* Shadows */
+  --shadow: 4px 4px 0 #ffffff;
+  --shadow-sm: 2px 2px 0 #ffffff;
+  --shadow-hover: 6px 6px 0 #ffffff;
+
+  /* Source colors */
+  --fresh: #00ff88;
+  --jira: #4c9aff;
+  --slack: #e01e5a;
+  --gmail: #ea4335;
+  --urgent: #ffffff;
+  --needs-response: #f5f500;
+
+  /* Debug */
+  --debug-info: #4c9aff;
+  --debug-error: #ff7b72;
+  --debug-surface: rgba(10, 10, 10, 0.97);
+
+  /* Patterns */
+  --held-stripe: repeating-linear-gradient(
+    45deg, #333, #333 4px, #1a1a1a 4px, #1a1a1a 8px
+  );
+}
