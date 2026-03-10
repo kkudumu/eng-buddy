@@ -524,3 +524,130 @@ def stage_enrich(card: dict, classification: dict) -> dict | None:
     log_enrichment_run(card_id, "enrich", model, duration_ms, "success",
                         f"actions={len(result['proposed_actions'])} playbook={'yes' if result.get('playbook_match') else 'no'}")
     return result
+
+
+# --- Stage 3: Pattern Detection ---
+
+def build_pattern_prompt(bucket_id: str, tickets: list) -> str:
+    """Build pattern detection prompt for a classification bucket."""
+    ticket_list = ""
+    for t in tickets[:15]:  # Cap context size
+        summary = t.get("summary", "")
+        actions = t.get("actions", [])
+        ticket_list += f"- {summary}\n  Actions: {json.dumps(actions)}\n"
+
+    return (
+        "You are analyzing IT support ticket patterns to identify repeatable workflows.\n\n"
+        f"Classification bucket: {bucket_id}\n"
+        f"Tickets in this bucket (last {PATTERN_LOOKBACK_DAYS} days):\n{ticket_list}\n"
+        "Questions:\n"
+        "1. Is there a repeating workflow pattern across these tickets?\n"
+        "2. If yes, what common steps could become an automated playbook?\n"
+        "3. What keywords should trigger this playbook?\n\n"
+        "Return ONLY valid JSON:\n"
+        "{\n"
+        '  "pattern_detected": true/false,\n'
+        '  "confidence": "high/medium/low",\n'
+        '  "playbook_draft": {\n'
+        '    "name": "kebab-case-name",\n'
+        '    "description": "what this playbook automates",\n'
+        '    "trigger_keywords": ["keyword1", "keyword2"],\n'
+        '    "steps": [\n'
+        '      {"name": "step description", "tool": "tool_name", "requires_human": true/false}\n'
+        "    ]\n"
+        "  },\n"
+        '  "reasoning": "explanation"\n'
+        "}"
+    )
+
+
+def parse_pattern_response(raw: str) -> dict | None:
+    """Parse pattern detection JSON from LLM response."""
+    result = _parse_llm_json(raw, "{")
+    if not isinstance(result, dict):
+        return None
+    result["pattern_detected"] = bool(result.get("pattern_detected", False))
+    result["confidence"] = str(result.get("confidence", "low")).lower()
+    if result["pattern_detected"] and isinstance(result.get("playbook_draft"), dict):
+        draft = result["playbook_draft"]
+        draft["name"] = str(draft.get("name", "")).strip().lower().replace(" ", "-")
+        if not draft["name"]:
+            result["playbook_draft"] = None
+    else:
+        result["playbook_draft"] = None
+    return result
+
+
+def draft_playbook(playbook_draft: dict):
+    """Write a draft playbook via brain.py."""
+    try:
+        subprocess.run(
+            [
+                "python3", str(BASE_DIR / "bin" / "brain.py"),
+                "--playbook-draft",
+                json.dumps(playbook_draft),
+            ],
+            capture_output=True, text=True, timeout=15,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+        print(f"  Failed to draft playbook: {e}")
+
+
+def stage_detect_patterns():
+    """Run pattern detection across all enriched cards. Once per cycle."""
+    conn = get_db()
+    try:
+        # Get enriched freshservice cards from last N days
+        rows = conn.execute(
+            """SELECT c.id, c.summary, c.proposed_actions, c.analysis_metadata
+               FROM cards c
+               WHERE c.source = 'freshservice'
+                 AND c.enrichment_status = 'enriched'
+                 AND c.timestamp >= datetime('now', ?)""",
+            [f"-{PATTERN_LOOKBACK_DAYS} days"],
+        ).fetchall()
+    finally:
+        conn.close()
+
+    if not rows:
+        return
+
+    # Group by classification bucket
+    buckets: dict[str, list] = {}
+    for row in rows:
+        meta = json.loads(row["analysis_metadata"] or "{}")
+        bucket = meta.get("classification_bucket", "unknown")
+        actions_raw = json.loads(row["proposed_actions"] or "[]")
+        action_types = [a.get("type", "") for a in actions_raw if isinstance(a, dict)]
+        buckets.setdefault(bucket, []).append({
+            "summary": row["summary"],
+            "actions": action_types,
+        })
+
+    # Only analyze buckets with 3+ tickets
+    for bucket_id, tickets in buckets.items():
+        if len(tickets) < VETTED_THRESHOLD:
+            continue
+
+        prompt = build_pattern_prompt(bucket_id, tickets)
+        model = STAGE_LLM_CONFIG["detect_patterns"]["cli"]
+        start = time.time()
+        try:
+            raw = _run_llm(prompt, "detect_patterns", timeout=60)
+            duration_ms = int((time.time() - start) * 1000)
+        except Exception as e:
+            duration_ms = int((time.time() - start) * 1000)
+            log_enrichment_run(0, "detect_patterns", model, duration_ms, "failed", str(e))
+            continue
+
+        result = parse_pattern_response(raw)
+        if not result:
+            log_enrichment_run(0, "detect_patterns", model, duration_ms, "failed", raw[:200])
+            continue
+
+        log_enrichment_run(0, "detect_patterns", model, duration_ms, "success",
+                            f"bucket={bucket_id} pattern={result['pattern_detected']} conf={result['confidence']}")
+
+        if result["pattern_detected"] and result.get("playbook_draft"):
+            print(f"  Pattern detected in bucket '{bucket_id}' — drafting playbook: {result['playbook_draft']['name']}")
+            draft_playbook(result["playbook_draft"])
