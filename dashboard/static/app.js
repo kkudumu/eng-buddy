@@ -708,6 +708,22 @@ function renderCardFoldout(card) {
   `;
 }
 
+function renderEnrichmentBadge(card) {
+  if (card.source !== 'freshservice') return '';
+  const status = card.enrichment_status || 'not_enriched';
+  if (status === 'enriched') return '<span class="badge enrichment-done">ENRICHED</span>';
+  if (status === 'enriching') return '<span class="badge enrichment-progress">ENRICHING...</span>';
+  if (status === 'failed') return '<span class="badge enrichment-failed">ENRICH FAILED</span>';
+  return '';
+}
+
+function renderPlaybookBadge(card) {
+  const meta = card.analysis_metadata || {};
+  const match = meta.playbook_match;
+  if (!match || !match.playbook_name) return '';
+  return `<span class="badge playbook-match">PLAYBOOK: ${escHtml(match.playbook_name)}</span>`;
+}
+
 function renderCard(card) {
   const actions = Array.isArray(card.proposed_actions)
     ? card.proposed_actions
@@ -720,6 +736,8 @@ function renderCard(card) {
       <div class="card-meta">
         ${sourceBadge(card.source)}
         ${classBadge(card.classification)}
+        ${renderEnrichmentBadge(card)}
+        ${renderPlaybookBadge(card)}
       </div>
       <div class="card-summary">${escHtml(card.summary || '(no summary)')}</div>
       <div class="card-time">${timeAgo(card.timestamp)}</div>

@@ -424,6 +424,11 @@ body {
 .badge.cls-workflow { background: var(--jira); color: var(--bg); }
 .badge.cls-time-saver { background: var(--needs-response); color: var(--bg); }
 .badge.cls-gap { background: transparent; color: var(--needs-response); border-color: var(--needs-response); }
+.badge.enrichment-done { color: var(--bg); background: var(--fresh); }
+.badge.enrichment-progress { color: var(--bg); background: var(--needs-response); animation: pulse 1.5s infinite; }
+.badge.enrichment-failed { color: var(--bg); background: var(--gmail); }
+.badge.playbook-match { color: var(--bg); background: var(--jira); }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
 
 .card-summary {
   flex: 1;

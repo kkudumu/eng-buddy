@@ -1567,6 +1567,7 @@ def _row_to_card(row):
     except (json.JSONDecodeError, TypeError):
         card["proposed_actions"] = []
     card["analysis_metadata"] = _card_analysis_metadata(card)
+    card["enrichment_status"] = card.get("enrichment_status", "not_enriched") or "not_enriched"
     return card
 
 
