@@ -111,6 +111,11 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
+# React dashboard (Wave 1)
+REACT_DIR = Path(__file__).parent / "static-react"
+if REACT_DIR.exists():
+    app.mount("/app-assets", StaticFiles(directory=str(REACT_DIR)), name="react-assets")
+
 
 def _escape_applescript_text(value: str) -> str:
     return str(value).replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ").replace("\r", " ")
@@ -1529,6 +1534,14 @@ def _should_include_in_inbox_view(card: dict, source: str, days: int, now_utc: d
         _next_business_day_end(local_timestamp),
     )
     return now_local <= retention_deadline
+
+@app.get("/app")
+@app.get("/app/{path:path}")
+async def serve_react(path: str = ""):
+    react_dir = Path(__file__).parent / "static-react"
+    if react_dir.exists():
+        return FileResponse(str(react_dir / "index.html"))
+    return HTMLResponse("<h1>React build not found. Run npm run build in dashboard/frontend/</h1>", status_code=404)
 
 @app.get("/")
 async def root():
