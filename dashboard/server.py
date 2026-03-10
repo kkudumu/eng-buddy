@@ -393,8 +393,11 @@ def _card_analysis_metadata(card: dict):
 
 
 def _card_actions(card: dict):
+    existing_actions = card.get("proposed_actions")
+    if isinstance(existing_actions, list):
+        return existing_actions
     try:
-        actions = json.loads(card.get("proposed_actions") or "[]")
+        actions = json.loads(existing_actions or "[]")
     except (json.JSONDecodeError, TypeError):
         actions = []
     return actions if isinstance(actions, list) else []
@@ -421,6 +424,73 @@ def _gmail_card_details(card: dict):
         "message_id": str(primary.get("message_id") or "").strip(),
         "to_email": str(primary.get("to_email") or "").strip(),
     }
+
+
+def _gmail_duplicate_key(card: dict):
+    details = _gmail_card_details(card)
+    thread_id = details["thread_id"].strip().lower()
+    if thread_id:
+        return f"thread:{thread_id}"
+
+    message_id = details["message_id"].strip().lower()
+    if message_id:
+        return f"message:{message_id}"
+
+    sender = (details["to_email"] or details["sender"]).strip().lower()
+    subject = details["subject"].strip().lower()
+    if sender and subject:
+        return f"sender-subject:{sender}|{subject}"
+    return f"card:{card.get('id')}"
+
+
+def _gmail_card_preference_key(card: dict):
+    timestamp = _parse_card_timestamp(card.get("timestamp"))
+    timestamp_score = timestamp.timestamp() if timestamp else 0
+    has_draft = 1 if str(card.get("draft_response") or "").strip() else 0
+    return (
+        has_draft,
+        timestamp_score,
+        int(card.get("id") or 0),
+    )
+
+
+def _collapse_gmail_duplicates(cards: list[dict]):
+    grouped = {}
+    for card in cards:
+        grouped.setdefault(_gmail_duplicate_key(card), []).append(card)
+
+    collapsed = []
+    for group in grouped.values():
+        representative = max(group, key=_gmail_card_preference_key)
+        if len(group) == 1:
+            collapsed.append(representative)
+            continue
+
+        merged = dict(representative)
+        meta = dict(representative.get("analysis_metadata") or {})
+        meta["duplicate_count"] = len(group)
+        meta["duplicate_card_ids"] = [int(item.get("id") or 0) for item in group]
+        merged["analysis_metadata"] = meta
+        collapsed.append(merged)
+
+    return sorted(collapsed, key=_gmail_card_preference_key, reverse=True)
+
+
+def _find_related_gmail_card_ids(conn, card: dict):
+    target_key = _gmail_duplicate_key(card)
+    if target_key.startswith("card:"):
+        return [int(card["id"])]
+
+    rows = conn.execute(
+        "SELECT id, summary, proposed_actions FROM cards WHERE source = 'gmail'",
+    ).fetchall()
+    related_ids = []
+    for row in rows:
+        candidate = dict(row)
+        if _gmail_duplicate_key(candidate) == target_key:
+            related_ids.append(int(candidate["id"]))
+
+    return sorted(set(related_ids or [int(card["id"])]))
 
 
 def _normalize_gmail_label(value: str):
@@ -1011,6 +1081,39 @@ def _ensure_audit_schema():
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_execution_attempts_entity ON execution_attempts(entity_type, entity_id, action_name, started_at)"
         )
+        # Freshservice enrichment pipeline tables
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS classification_buckets (
+                id TEXT PRIMARY KEY,
+                description TEXT,
+                knowledge_files TEXT DEFAULT '[]',
+                confidence_keywords TEXT DEFAULT '[]',
+                ticket_count INTEGER DEFAULT 0,
+                status TEXT DEFAULT 'emerging',
+                created_by_ticket INTEGER,
+                created_at TEXT DEFAULT (datetime('now')),
+                updated_at TEXT DEFAULT (datetime('now'))
+            )"""
+        )
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS enrichment_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                card_id INTEGER,
+                stage TEXT,
+                model TEXT,
+                duration_ms INTEGER,
+                status TEXT,
+                response_summary TEXT,
+                created_at TEXT DEFAULT (datetime('now'))
+            )"""
+        )
+        # Add enrichment_status column to cards if missing
+        cursor = conn.execute("PRAGMA table_info(cards)")
+        existing_cols = {row[1] for row in cursor.fetchall()}
+        if "enrichment_status" not in existing_cols:
+            conn.execute(
+                "ALTER TABLE cards ADD COLUMN enrichment_status TEXT DEFAULT 'not_enriched'"
+            )
         conn.commit()
     finally:
         conn.close()
@@ -2078,15 +2181,22 @@ async def get_inbox_view(source: str, days: int = 3):
     finally:
         conn.close()
 
+    cards = []
+    for row in rows:
+        card = _row_to_card(row)
+        if not _should_include_in_inbox_view(card, source, days, now_utc, now_local):
+            continue
+        cards.append(card)
+
+    if source == "gmail":
+        cards = _collapse_gmail_duplicates(cards)
+
     needs_sections = {"needs-action", "action-needed", "needs_response", "needs-response"}
     no_action_sections = {"no-action", "noise", "responded", "fyi", "alert"}
     needs_action = []
     no_action = []
 
-    for row in rows:
-        card = _row_to_card(row)
-        if not _should_include_in_inbox_view(card, source, days, now_utc, now_local):
-            continue
+    for card in cards:
         section = (card.get("section") or "").lower()
         classification = (card.get("classification") or "").lower()
         responded = bool(card.get("responded"))
@@ -3566,14 +3676,17 @@ async def archive_gmail_card(card_id: int, body: dict = Body(default={})):
     details = _gmail_card_details(card)
     search_query = f'from:{details["to_email"] or details["sender"]} subject:"{details["subject"]}" newer_than:30d'
     prompt = (
-        "Use the Gmail MCP to archive an email by removing the INBOX label.\n"
+        "Use the Gmail MCP to archive a Gmail conversation by removing the INBOX label.\n"
         f"Sender: {details['sender']}\n"
         f"Subject: {details['subject']}\n"
         f"Known message_id: {details['message_id'] or '(none)'}\n"
         f"Known thread_id: {details['thread_id'] or '(none)'}\n\n"
-        "If message_id is available, call modify_email with removeLabelIds ['INBOX'].\n"
-        f"Otherwise, call search_emails with query {json.dumps(search_query)}, choose the best recent match, and archive that message.\n"
-        'Return ONLY JSON: {"status":"archived","message_id":"..."}'
+        "Prefer archiving the whole visible thread, not just one message.\n"
+        "If thread_id is available, call search_emails with the query below, collect the matching recent inbox message ids for this conversation, "
+        "and call batch_modify_emails with removeLabelIds ['INBOX'] for all of them.\n"
+        "If you only find one matching message, archive that one.\n"
+        f"If thread_id is unavailable, call search_emails with query {json.dumps(search_query)} and archive the best recent match.\n"
+        'Return ONLY JSON: {"status":"archived","message_id":"...","message_ids":["..."]}'
     )
     result = _run_claude_print(prompt, timeout=45)
     if result.returncode != 0:
@@ -3583,9 +3696,11 @@ async def archive_gmail_card(card_id: int, body: dict = Body(default={})):
 
     conn = get_db()
     try:
+        related_ids = _find_related_gmail_card_ids(conn, card)
+        placeholders = ",".join("?" for _ in related_ids)
         conn.execute(
-            "UPDATE cards SET status = 'completed', section = 'no-action' WHERE id = ?",
-            [card_id],
+            f"UPDATE cards SET status = 'completed', section = 'no-action' WHERE id IN ({placeholders})",
+            related_ids,
         )
         conn.commit()
     finally:
