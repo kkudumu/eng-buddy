@@ -334,3 +334,193 @@ def stage_classify(card: dict) -> dict | None:
     log_enrichment_run(card_id, "classify", model, duration_ms, "success",
                         f"bucket={result['bucket_id']} new={result['is_new_bucket']}")
     return result
+
+
+# --- Freshservice API helpers ---
+
+def fetch_ticket_description(ticket_id: int) -> str:
+    """Fetch ticket description from Freshservice API."""
+    url = f"https://{FRESHSERVICE_DOMAIN}/api/v2/tickets/{ticket_id}?include=conversations"
+    req = urllib.request.Request(url, headers=_FS_HEADERS)
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read())
+            ticket = data.get("ticket", {})
+            desc = ticket.get("description_text") or ticket.get("description") or ""
+            # Also grab first few conversation entries for context
+            convos = data.get("conversations", [])
+            convo_text = ""
+            for c in convos[:3]:
+                body = c.get("body_text") or c.get("body") or ""
+                if body:
+                    convo_text += f"\n---\n{body[:500]}"
+            return (desc[:2000] + convo_text[:1000]).strip()
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as e:
+        print(f"  Failed to fetch ticket {ticket_id} description: {e}")
+        return ""
+
+
+def load_knowledge_file(filename: str, max_chars: int = 3000) -> str:
+    """Load a knowledge file, truncated to max_chars."""
+    path = KNOWLEDGE_DIR / filename
+    if not path.exists():
+        return ""
+    try:
+        return path.read_text(encoding="utf-8")[:max_chars]
+    except OSError:
+        return ""
+
+
+def load_approved_playbooks_summary() -> str:
+    """Load approved playbook summaries for matching."""
+    try:
+        result = subprocess.run(
+            ["python3", str(BASE_DIR / "bin" / "brain.py"), "--playbook-list"],
+            capture_output=True, text=True, timeout=10,
+        )
+        return result.stdout.strip()[:3000] if result.stdout else "No approved playbooks yet."
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return "No approved playbooks yet."
+
+
+# --- Stage 2: Enrichment + Playbook Matching ---
+
+def build_enrich_prompt(card: dict, classification: dict,
+                         description: str, playbook_summaries: list) -> str:
+    """Build enrichment prompt with ticket details, knowledge, and playbooks."""
+    meta = json.loads(card.get("analysis_metadata") or "{}")
+    summary = card.get("summary", "")
+    bucket_id = classification.get("bucket_id", "unknown")
+
+    # Load relevant knowledge
+    knowledge_text = ""
+    for kf in classification.get("knowledge_files", []):
+        content = load_knowledge_file(kf)
+        if content:
+            knowledge_text += f"\n### {kf}\n{content}\n"
+
+    if not knowledge_text:
+        knowledge_text = "(No relevant knowledge files found)"
+
+    playbooks_text = "\n".join(playbook_summaries) if playbook_summaries else "No approved playbooks yet."
+
+    return (
+        "You are an IT systems engineering assistant triaging a Freshservice ticket.\n\n"
+        f"Ticket: {summary}\n"
+        f"Description:\n{description[:2000]}\n\n"
+        f"Type: {meta.get('type', 'unknown')} | Priority: {meta.get('priority', 'unknown')}\n"
+        f"Status: {meta.get('status', 'unknown')} | Created: {meta.get('created_at', 'unknown')}\n"
+        f"Classification bucket: {bucket_id}\n\n"
+        f"Relevant knowledge:\n{knowledge_text}\n\n"
+        f"Approved playbooks:\n{playbooks_text}\n\n"
+        "Tasks:\n"
+        "1. Generate 2-5 specific, actionable next steps for this ticket.\n"
+        "2. If any approved playbook matches, identify which and which steps apply.\n\n"
+        "Be SPECIFIC — not 'investigate the issue' but 'check Okta SCIM provisioning logs for failed sync events'.\n\n"
+        "Return ONLY valid JSON:\n"
+        "{\n"
+        '  "proposed_actions": [\n'
+        '    {"type": "action_type", "draft": "specific action description"}\n'
+        "  ],\n"
+        '  "playbook_match": {\n'
+        '    "playbook_id": "id or null",\n'
+        '    "playbook_name": "name or null",\n'
+        '    "applicable_steps": [1, 2, 4],\n'
+        '    "reasoning": "why this playbook matches"\n'
+        "  }\n"
+        "}\n\n"
+        "Action types: reply_to_requester, escalate, create_jira_ticket, "
+        "follow_playbook, investigate, close_ticket, request_info, grant_access, "
+        "check_integration, review_config, check_logs, update_documentation, "
+        "or any other relevant type."
+    )
+
+
+def parse_enrich_response(raw: str) -> dict | None:
+    """Parse enrichment JSON from LLM response."""
+    result = _parse_llm_json(raw, "{")
+    if not isinstance(result, dict):
+        return None
+    actions = result.get("proposed_actions")
+    if not isinstance(actions, list) or not actions:
+        return None
+    # Normalize and cap
+    normalized = []
+    for a in actions[:6]:
+        if not isinstance(a, dict):
+            continue
+        action_type = str(a.get("type", "next-step")).strip() or "next-step"
+        draft = str(a.get("draft", "")).strip()
+        if draft:
+            normalized.append({"type": action_type, "draft": draft})
+    if not normalized:
+        return None
+
+    playbook_match = result.get("playbook_match")
+    if isinstance(playbook_match, dict) and not playbook_match.get("playbook_id"):
+        playbook_match = None
+
+    return {"proposed_actions": normalized, "playbook_match": playbook_match}
+
+
+def save_enrichment(card_id: int, enrichment: dict):
+    """Persist enrichment results to card."""
+    conn = get_db()
+    try:
+        # Update proposed_actions
+        conn.execute(
+            "UPDATE cards SET proposed_actions = ?, enrichment_status = 'enriched' WHERE id = ?",
+            [json.dumps(enrichment["proposed_actions"]), card_id],
+        )
+        # Update analysis_metadata with playbook match info
+        if enrichment.get("playbook_match"):
+            row = conn.execute("SELECT analysis_metadata FROM cards WHERE id = ?", [card_id]).fetchone()
+            meta = json.loads(row["analysis_metadata"] or "{}") if row else {}
+            meta["playbook_match"] = enrichment["playbook_match"]
+            conn.execute(
+                "UPDATE cards SET analysis_metadata = ? WHERE id = ?",
+                [json.dumps(meta), card_id],
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def stage_enrich(card: dict, classification: dict) -> dict | None:
+    """Run enrichment stage. Returns enrichment dict or None on failure."""
+    card_id = card["id"]
+    meta = json.loads(card.get("analysis_metadata") or "{}")
+    ticket_id = meta.get("ticket_id")
+
+    # Fetch full ticket description
+    description = fetch_ticket_description(ticket_id) if ticket_id else ""
+
+    # Load playbook summaries
+    playbook_text = load_approved_playbooks_summary()
+    playbooks = [playbook_text] if playbook_text else []
+
+    prompt = build_enrich_prompt(card, classification, description, playbooks)
+    model = STAGE_LLM_CONFIG["enrich"]["cli"]
+    start = time.time()
+    try:
+        raw = _run_llm(prompt, "enrich", timeout=60)
+        duration_ms = int((time.time() - start) * 1000)
+    except Exception as e:
+        duration_ms = int((time.time() - start) * 1000)
+        log_enrichment_run(card_id, "enrich", model, duration_ms, "failed", str(e))
+        return None
+
+    result = parse_enrich_response(raw)
+    if not result:
+        log_enrichment_run(card_id, "enrich", model, duration_ms, "failed", raw[:200])
+        # Mark as failed so we don't retry every cycle
+        conn = get_db()
+        conn.execute("UPDATE cards SET enrichment_status = 'failed' WHERE id = ?", [card_id])
+        conn.commit()
+        conn.close()
+        return None
+
+    save_enrichment(card_id, result)
+    log_enrichment_run(card_id, "enrich", model, duration_ms, "success",
+                        f"actions={len(result['proposed_actions'])} playbook={'yes' if result.get('playbook_match') else 'no'}")
+    return result
