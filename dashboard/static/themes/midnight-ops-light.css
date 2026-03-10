@@ -1,0 +1,40 @@
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700;800&display=swap');
+
+:root {
+  --bg: #f5f0eb;
+  --card-bg: #ffffff;
+  --surface: #f0ebe5;
+  --surface-alt: #e8e3dd;
+  --border: #000000;
+  --border-subtle: #bdb4aa;
+  --border-faint: #d9d1c8;
+  --text: #000000;
+  --muted: #655d56;
+  --hover-bg: #ece4db;
+  --overlay-bg: rgba(245, 240, 235, 0.92);
+  --shadow: 4px 4px 0 #000000;
+  --shadow-sm: 2px 2px 0 #000000;
+  --shadow-hover: 6px 6px 0 #000000;
+  --font: 'JetBrains Mono', monospace;
+  --font-heading: 'JetBrains Mono', monospace;
+  --radius: 0;
+  --radius-sm: 0;
+  --transition-speed: 0.1s;
+  --fresh: #00894a;
+  --jira: #0f62c9;
+  --slack: #c7134c;
+  --gmail: #c53f32;
+  --urgent: #000000;
+  --needs-response: #b39500;
+  --debug-info: #0f62c9;
+  --debug-error: #c53f32;
+  --debug-surface: rgba(255, 255, 255, 0.97);
+  --error-row-bg: rgba(197, 63, 50, 0.1);
+  --held-stripe: repeating-linear-gradient(
+    45deg,
+    #ddd2c8,
+    #ddd2c8 4px,
+    #ffffff 4px,
+    #ffffff 8px
+  );
+}

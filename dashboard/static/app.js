@@ -43,47 +43,92 @@ const THEMES = ['midnight-ops', 'soft-kitty', 'neon-dreams'];
 const MODES = ['dark', 'light'];
 const THEME_STORAGE_KEY = 'eb-theme';
 const MODE_STORAGE_KEY = 'eb-mode';
+const DEFAULT_THEME = 'neon-dreams';
+const DEFAULT_MODE = 'dark';
+
+function normalizeTheme(theme) {
+  return THEMES.includes(theme) ? theme : DEFAULT_THEME;
+}
+
+function normalizeMode(mode) {
+  return MODES.includes(mode) ? mode : DEFAULT_MODE;
+}
 
 const themeState = {
-  theme: localStorage.getItem(THEME_STORAGE_KEY) || 'neon-dreams',
-  mode: localStorage.getItem(MODE_STORAGE_KEY) || 'dark',
+  theme: normalizeTheme(localStorage.getItem(THEME_STORAGE_KEY)),
+  mode: normalizeMode(localStorage.getItem(MODE_STORAGE_KEY)),
 };
 
 function themeFilename(theme, mode) {
   return mode === 'light' ? `${theme}-light` : theme;
 }
 
-function applyTheme() {
+function ensureThemeStylesheet() {
+  let link = document.getElementById('theme-css');
+  if (link) return link;
+
+  link = document.createElement('link');
+  link.id = 'theme-css';
+  link.rel = 'stylesheet';
+  document.head.appendChild(link);
+  return link;
+}
+
+async function persistThemeSettings() {
+  try {
+    await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ theme: themeState.theme, mode: themeState.mode }),
+    });
+  } catch {}
+}
+
+function applyTheme(options = {}) {
+  const { persist = false } = options;
+  themeState.theme = normalizeTheme(themeState.theme);
+  themeState.mode = normalizeMode(themeState.mode);
+
   const file = themeFilename(themeState.theme, themeState.mode);
-  const link = document.getElementById('theme-css');
-  if (link) link.href = `/static/themes/${file}.css`;
+  const link = ensureThemeStylesheet();
+  link.href = `/static/themes/${file}.css`;
 
   const toggle = document.getElementById('mode-toggle');
-  if (toggle) toggle.innerHTML = themeState.mode === 'dark' ? '&#9790;' : '&#9728;';
+  if (toggle) {
+    toggle.innerHTML = themeState.mode === 'dark' ? '&#9790;' : '&#9728;';
+    toggle.setAttribute('aria-label', themeState.mode === 'dark' ? 'Switch to light mode' : 'Switch to dark mode');
+  }
 
   const select = document.getElementById('theme-select');
   if (select) select.value = themeState.theme;
 
+  document.body.dataset.theme = themeState.theme;
+  document.body.dataset.mode = themeState.mode;
   localStorage.setItem(THEME_STORAGE_KEY, themeState.theme);
   localStorage.setItem(MODE_STORAGE_KEY, themeState.mode);
 
-  // Also persist server-side
-  fetch('/api/settings', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ theme: themeState.theme, mode: themeState.mode }),
-  }).catch(() => {});
+  if (persist) {
+    persistThemeSettings();
+  }
 }
 
-document.getElementById('theme-select').addEventListener('change', (e) => {
-  themeState.theme = e.target.value;
-  applyTheme();
-});
+function initThemeControls() {
+  const select = document.getElementById('theme-select');
+  if (select) {
+    select.addEventListener('change', (e) => {
+      themeState.theme = normalizeTheme(e.target.value);
+      applyTheme({ persist: true });
+    });
+  }
 
-document.getElementById('mode-toggle').addEventListener('click', () => {
-  themeState.mode = themeState.mode === 'dark' ? 'light' : 'dark';
-  applyTheme();
-});
+  const toggle = document.getElementById('mode-toggle');
+  if (toggle) {
+    toggle.addEventListener('click', () => {
+      themeState.mode = themeState.mode === 'dark' ? 'light' : 'dark';
+      applyTheme({ persist: true });
+    });
+  }
+}
 
 // -- Helpers ------------------------------------------------------------------
 
@@ -2750,35 +2795,43 @@ async function loadDashboardSettings() {
     const data = await r.json();
     dashboardSettings.terminal = data.terminal || 'Terminal';
     dashboardSettings.macosNotifications = !!data.macos_notifications;
-    document.getElementById('terminal-select').value = dashboardSettings.terminal;
-    document.getElementById('macos-notifications-toggle').checked = dashboardSettings.macosNotifications;
-    if (data.theme && THEMES.includes(data.theme) && !localStorage.getItem(THEME_STORAGE_KEY)) {
-      themeState.theme = data.theme;
+    const terminalSelect = document.getElementById('terminal-select');
+    if (terminalSelect) terminalSelect.value = dashboardSettings.terminal;
+    const notificationsToggle = document.getElementById('macos-notifications-toggle');
+    if (notificationsToggle) notificationsToggle.checked = dashboardSettings.macosNotifications;
+    if (!localStorage.getItem(THEME_STORAGE_KEY)) {
+      themeState.theme = normalizeTheme(data.theme);
     }
-    if (data.mode && MODES.includes(data.mode) && !localStorage.getItem(MODE_STORAGE_KEY)) {
-      themeState.mode = data.mode;
+    if (!localStorage.getItem(MODE_STORAGE_KEY)) {
+      themeState.mode = normalizeMode(data.mode);
     }
     applyTheme();
   } catch {}
 }
 
-document.getElementById('terminal-select').addEventListener('change', async (e) => {
-  dashboardSettings.terminal = e.target.value;
-  await fetch('/api/settings', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ terminal: e.target.value })
+const terminalSelect = document.getElementById('terminal-select');
+if (terminalSelect) {
+  terminalSelect.addEventListener('change', async (e) => {
+    dashboardSettings.terminal = e.target.value;
+    await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ terminal: e.target.value })
+    });
   });
-});
+}
 
-document.getElementById('macos-notifications-toggle').addEventListener('change', async (e) => {
-  dashboardSettings.macosNotifications = e.target.checked;
-  await fetch('/api/settings', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ macos_notifications: e.target.checked })
+const notificationsToggle = document.getElementById('macos-notifications-toggle');
+if (notificationsToggle) {
+  notificationsToggle.addEventListener('change', async (e) => {
+    dashboardSettings.macosNotifications = e.target.checked;
+    await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ macos_notifications: e.target.checked })
+    });
   });
-});
+}
 
 const restartBtn = document.getElementById('restart-btn');
 
@@ -2843,6 +2896,7 @@ if (restartBtn) {
 // -- Init ---------------------------------------------------------------------
 
 async function init() {
+  initThemeControls();
   applyTheme();
   renderDebugDrawer();
   recordDebugEvent('info', 'Initializing dashboard', { scope: 'ALL', origin: 'init' });

@@ -3991,8 +3991,14 @@ async def update_settings(body: dict):
     if "macos_notifications" in body:
         settings["macos_notifications"] = bool(body["macos_notifications"])
     if "theme" in body:
+        allowed_themes = {"midnight-ops", "soft-kitty", "neon-dreams"}
+        if body["theme"] not in allowed_themes:
+            raise HTTPException(400, f"theme must be one of {allowed_themes}")
         settings["theme"] = body["theme"]
     if "mode" in body:
+        allowed_modes = {"dark", "light"}
+        if body["mode"] not in allowed_modes:
+            raise HTTPException(400, f"mode must be one of {allowed_modes}")
         settings["mode"] = body["mode"]
     settings = _save_settings(settings)
     TERMINAL_APP = settings["terminal"]

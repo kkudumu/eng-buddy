@@ -91,6 +91,8 @@ async def test_settings_defaults_disable_macos_notifications(tmp_path, monkeypat
     assert r.json() == {
         "terminal": server.DEFAULT_TERMINAL_APP,
         "macos_notifications": False,
+        "theme": "neon-dreams",
+        "mode": "dark",
     }
 
 
@@ -101,16 +103,50 @@ async def test_update_settings_persists_notification_preference(tmp_path, monkey
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         r = await client.post(
             "/api/settings",
-            json={"terminal": "Warp", "macos_notifications": True},
+            json={
+                "terminal": "Warp",
+                "macos_notifications": True,
+                "theme": "soft-kitty",
+                "mode": "light",
+            },
         )
 
     assert r.status_code == 200
-    assert r.json() == {"terminal": "Warp", "macos_notifications": True}
+    assert r.json() == {
+        "terminal": "Warp",
+        "macos_notifications": True,
+        "theme": "soft-kitty",
+        "mode": "light",
+    }
     settings_file = tmp_path / "dashboard-settings.json"
     assert json.loads(settings_file.read_text(encoding="utf-8")) == {
         "terminal": "Warp",
         "macos_notifications": True,
+        "theme": "soft-kitty",
+        "mode": "light",
     }
+
+
+@pytest.mark.asyncio
+async def test_update_settings_rejects_invalid_theme(tmp_path, monkeypatch):
+    monkeypatch.setattr(server, "ENG_BUDDY_DIR", tmp_path)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r = await client.post("/api/settings", json={"theme": "broken-theme"})
+
+    assert r.status_code == 400
+    assert "theme must be one of" in r.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_update_settings_rejects_invalid_mode(tmp_path, monkeypatch):
+    monkeypatch.setattr(server, "ENG_BUDDY_DIR", tmp_path)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r = await client.post("/api/settings", json={"mode": "sepia"})
+
+    assert r.status_code == 400
+    assert "mode must be one of" in r.json()["detail"]
 
 
 @pytest.mark.asyncio

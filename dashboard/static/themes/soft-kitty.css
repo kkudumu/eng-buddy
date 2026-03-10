@@ -1,0 +1,68 @@
+@import url('https://fonts.googleapis.com/css2?family=Comfortaa:wght@400;700&family=Patrick+Hand&display=swap');
+
+:root {
+  --bg: #1a1528;
+  --card-bg: #241e35;
+  --surface: #1f1830;
+  --surface-alt: #2a2240;
+  --border: #f4a8c8;
+  --border-subtle: #554170;
+  --border-faint: #382b4f;
+  --text: #f7eef9;
+  --muted: #b5a0cd;
+  --hover-bg: #31254a;
+  --overlay-bg: rgba(26, 21, 40, 0.9);
+  --shadow: 0 12px 28px rgba(244, 168, 200, 0.18);
+  --shadow-sm: 0 8px 18px rgba(244, 168, 200, 0.14);
+  --shadow-hover: 0 18px 32px rgba(244, 168, 200, 0.24);
+  --font: 'Comfortaa', sans-serif;
+  --font-heading: 'Patrick Hand', cursive;
+  --radius: 18px;
+  --radius-sm: 12px;
+  --transition-speed: 0.18s;
+  --fresh: #90e3b2;
+  --jira: #9ac4ff;
+  --slack: #ff8ab2;
+  --gmail: #ff9b87;
+  --urgent: #f7eef9;
+  --needs-response: #ffe38b;
+  --debug-info: #9ac4ff;
+  --debug-error: #ff9b87;
+  --debug-surface: rgba(29, 23, 44, 0.97);
+  --error-row-bg: rgba(255, 155, 135, 0.12);
+  --held-stripe: repeating-linear-gradient(
+    45deg,
+    #332747,
+    #332747 4px,
+    #241e35 4px,
+    #241e35 8px
+  );
+}
+
+#header,
+#filter-bar,
+.section-header {
+  border-bottom-style: dashed;
+}
+
+.card,
+.debug-drawer,
+.action-btn,
+.count-badge,
+.poller-badge,
+.section-group {
+  border-style: dashed;
+}
+
+.filter-btn.active {
+  border-bottom-style: dashed;
+}
+
+#header-title,
+.briefing-title {
+  letter-spacing: 2px;
+}
+
+.card:hover {
+  transform: translateY(-2px);
+}

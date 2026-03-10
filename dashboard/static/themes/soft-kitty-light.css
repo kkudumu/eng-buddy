@@ -1,0 +1,72 @@
+@import url('https://fonts.googleapis.com/css2?family=Comfortaa:wght@400;700&family=Patrick+Hand&display=swap');
+
+:root {
+  --bg: #fff5f0;
+  --card-bg: #ffffff;
+  --surface: #fff0ea;
+  --surface-alt: #ffe7df;
+  --border: #f28aa8;
+  --border-subtle: #edbfd0;
+  --border-faint: #f6d7e1;
+  --text: #40263e;
+  --muted: #9f7890;
+  --hover-bg: #ffe9ee;
+  --overlay-bg: rgba(255, 245, 240, 0.94);
+  --shadow: 0 12px 28px rgba(242, 138, 168, 0.16);
+  --shadow-sm: 0 8px 18px rgba(242, 138, 168, 0.12);
+  --shadow-hover: 0 18px 32px rgba(242, 138, 168, 0.22);
+  --font: 'Comfortaa', sans-serif;
+  --font-heading: 'Patrick Hand', cursive;
+  --radius: 18px;
+  --radius-sm: 12px;
+  --transition-speed: 0.18s;
+  --fresh: #3fb57b;
+  --jira: #4f8fe6;
+  --slack: #e65c89;
+  --gmail: #e56b5d;
+  --urgent: #40263e;
+  --needs-response: #d7a92b;
+  --debug-info: #4f8fe6;
+  --debug-error: #e56b5d;
+  --debug-surface: rgba(255, 255, 255, 0.97);
+  --error-row-bg: rgba(229, 107, 93, 0.1);
+  --held-stripe: repeating-linear-gradient(
+    45deg,
+    #fde0e8,
+    #fde0e8 4px,
+    #ffffff 4px,
+    #ffffff 8px
+  );
+}
+
+body {
+  background-image: radial-gradient(circle at top left, rgba(242, 138, 168, 0.16), transparent 36%);
+}
+
+#header,
+#filter-bar,
+.section-header {
+  border-bottom-style: dashed;
+}
+
+.card,
+.debug-drawer,
+.action-btn,
+.count-badge,
+.poller-badge,
+.section-group {
+  border-style: dashed;
+}
+
+.filter-btn.active {
+  border-bottom-style: dashed;
+}
+
+#header-title,
+.briefing-title {
+  letter-spacing: 2px;
+}
+
+.card:hover {
+  transform: translateY(-2px);
+}

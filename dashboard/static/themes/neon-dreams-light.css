@@ -1,0 +1,66 @@
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700;800&family=VT323&display=swap');
+
+:root {
+  --bg: #e8d5f5;
+  --card-bg: rgba(255, 255, 255, 0.72);
+  --surface: rgba(255, 255, 255, 0.62);
+  --surface-alt: rgba(255, 255, 255, 0.52);
+  --border: #ec6dcb;
+  --border-subtle: #caa6dc;
+  --border-faint: #d7b7e6;
+  --text: #33114e;
+  --muted: #815f9f;
+  --hover-bg: rgba(236, 109, 203, 0.12);
+  --overlay-bg: rgba(232, 213, 245, 0.88);
+  --shadow: 0 8px 24px rgba(129, 95, 159, 0.18);
+  --shadow-sm: 0 6px 16px rgba(129, 95, 159, 0.14);
+  --shadow-hover: 0 12px 32px rgba(79, 143, 230, 0.2);
+  --font: 'JetBrains Mono', monospace;
+  --font-heading: 'VT323', monospace;
+  --radius: 0;
+  --radius-sm: 0;
+  --transition-speed: 0.15s;
+  --fresh: #18c58b;
+  --jira: #3aa1ff;
+  --slack: #ec6dcb;
+  --gmail: #ff7c7c;
+  --urgent: #33114e;
+  --needs-response: #d1b72f;
+  --debug-info: #3aa1ff;
+  --debug-error: #ff7c7c;
+  --debug-surface: rgba(255, 255, 255, 0.92);
+  --error-row-bg: rgba(255, 124, 124, 0.1);
+  --held-stripe: repeating-linear-gradient(
+    45deg,
+    rgba(236, 109, 203, 0.12),
+    rgba(236, 109, 203, 0.12) 4px,
+    rgba(255, 255, 255, 0.58) 4px,
+    rgba(255, 255, 255, 0.58) 8px
+  );
+}
+
+body {
+  background-image:
+    linear-gradient(rgba(58, 161, 255, 0.07) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(236, 109, 203, 0.07) 1px, transparent 1px);
+  background-size: 36px 36px;
+}
+
+.card {
+  position: relative;
+  backdrop-filter: blur(10px);
+}
+
+.card::before {
+  content: '';
+  display: block;
+  height: 20px;
+  margin: -2px -2px 10px -2px;
+  background: linear-gradient(90deg, rgba(236, 109, 203, 0.7), rgba(179, 103, 255, 0.7), rgba(58, 161, 255, 0.7));
+  border-bottom: 1px solid var(--border);
+}
+
+#header-title,
+.briefing-title {
+  letter-spacing: 6px;
+}
