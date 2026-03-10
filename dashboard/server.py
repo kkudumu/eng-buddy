@@ -355,8 +355,9 @@ def _briefing_meeting_signature(meetings):
     return signature
 
 def get_db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
     return conn
 
 
@@ -1649,6 +1650,10 @@ async def serve_react(path: str = ""):
 
 @app.get("/")
 async def root():
+    from starlette.responses import RedirectResponse
+    react_dir = Path(__file__).parent / "static-react"
+    if react_dir.exists():
+        return RedirectResponse(url="/app", status_code=302)
     return FileResponse(str(STATIC_DIR / "index.html"))
 
 @app.get("/api/health")
@@ -2165,6 +2170,125 @@ def _parse_approval(approval: str, total_steps: int) -> set:
         excluded = {int(n) for n in nums if 1 <= int(n) <= total_steps}
 
     return excluded
+
+
+# ========== PLAN ENGINE ==========
+
+_PLANNER_PATH = str(Path(__file__).parent.parent / "bin" / "planner")
+if _PLANNER_PATH not in sys.path:
+    sys.path.insert(0, _PLANNER_PATH)
+
+PLANS_DIR = str(Path.home() / ".claude" / "eng-buddy" / "plans")
+REGISTRY_DIR = str(Path(__file__).parent.parent / "playbooks" / "tool-registry")
+
+
+def _get_plan_store():
+    from store import PlanStore
+    return PlanStore(PLANS_DIR, str(DB_PATH))
+
+
+@app.get("/api/cards/{card_id}/plan")
+async def get_card_plan(card_id: int):
+    store = _get_plan_store()
+    plan = store.get(card_id)
+    if not plan:
+        raise HTTPException(404, "No plan for this card")
+    return {"plan": plan.to_dict()}
+
+
+@app.patch("/api/cards/{card_id}/plan/steps/{step_index}")
+async def update_plan_step(card_id: int, step_index: int, body: dict = Body(...)):
+    store = _get_plan_store()
+    plan = store.get(card_id)
+    if not plan:
+        raise HTTPException(404, "No plan for this card")
+    step = plan.get_step(step_index)
+    if not step:
+        raise HTTPException(404, f"Step {step_index} not found")
+    new_status = body.get("status", step.status)
+    new_draft = body.get("draft_content")
+    if new_draft is not None and new_draft != step.draft_content:
+        step.draft_content = new_draft
+        step.status = "edited"
+    else:
+        step.status = new_status
+    store.save(plan)
+    _stale_sources.add("plans")
+    return {"step": step.to_dict()}
+
+
+@app.post("/api/cards/{card_id}/plan/approve-remaining")
+async def approve_remaining_steps(card_id: int, body: dict = Body(...)):
+    store = _get_plan_store()
+    plan = store.get(card_id)
+    if not plan:
+        raise HTTPException(404, "No plan for this card")
+    from_index = body.get("from_index", 1)
+    approved = 0
+    for step in plan.all_steps():
+        if step.index >= from_index and step.status == "pending":
+            step.status = "approved"
+            approved += 1
+    store.save(plan)
+    _stale_sources.add("plans")
+    return {"approved_count": approved, "plan": plan.to_dict()}
+
+
+@app.post("/api/cards/{card_id}/plan/execute")
+async def execute_plan(card_id: int):
+    store = _get_plan_store()
+    plan = store.get(card_id)
+    if not plan:
+        raise HTTPException(404, "No plan for this card")
+    lines = [f"Execute this plan for card #{card_id}. Follow each step exactly.\n"]
+    step_count = 0
+    skipped = []
+    for phase in plan.phases:
+        lines.append(f"\n## Phase: {phase.name}\n")
+        for step in phase.steps:
+            if step.status == "skipped":
+                skipped.append(step.index)
+                lines.append(f"Step {step.index}: [SKIPPED] {step.summary}")
+                continue
+            if step.status not in ("approved", "edited"):
+                skipped.append(step.index)
+                continue
+            step_count += 1
+            lines.append(f"Step {step.index}: {step.summary}")
+            lines.append(f"  Tool: {step.tool}")
+            if step.params:
+                lines.append(f"  Params: {json.dumps(step.params)}")
+            if step.draft_content:
+                lines.append(f"  Content: {step.draft_content}")
+            lines.append("")
+    prompt_text = "\n".join(lines)
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+        f.write(prompt_text)
+        prompt_file = f.name
+    plan.status = "executing"
+    store.save(plan)
+    # Write a shell wrapper to avoid AppleScript string interpolation issues
+    import shlex
+    wrapper_file = prompt_file + ".sh"
+    with open(wrapper_file, "w") as wf:
+        wf.write(f"#!/bin/bash\nclaude --print -p - < {shlex.quote(prompt_file)}\n")
+    os.chmod(wrapper_file, 0o755)
+    script = f'tell application "Terminal"\n    activate\n    do script "{shlex.quote(wrapper_file)}"\nend tell'
+    subprocess.Popen(["osascript", "-e", script])
+    return {"status": "dispatched", "steps": step_count, "skipped": skipped}
+
+
+@app.post("/api/cards/{card_id}/plan/regenerate")
+async def regenerate_plan(card_id: int, body: dict = Body(...)):
+    store = _get_plan_store()
+    feedback = body.get("feedback")
+    store.delete(card_id)
+    # Store feedback so worker can pass it to CardPlanner.regenerate()
+    if feedback:
+        feedback_path = Path(PLANS_DIR) / f"{card_id}.feedback"
+        feedback_path.write_text(feedback)
+    _stale_sources.add("plans")
+    return {"status": "queued", "feedback": feedback}
 
 
 @app.post("/api/cards/approve-all")
@@ -4418,7 +4542,11 @@ async def get_briefing(regenerate: bool = False):
     today_date = date.today()
     today = today_date.isoformat()
 
-    conn = get_db()
+    try:
+        conn = get_db()
+    except sqlite3.OperationalError as e:
+        return {"error": f"Database unavailable: {e}", "date": today}
+
     try:
         calendar_meetings = _load_briefing_calendar_meetings(conn, today_date)
 
@@ -4442,6 +4570,8 @@ async def get_briefing(regenerate: bool = False):
         stats = conn.execute(
             "SELECT metric, SUM(value) FROM stats WHERE date = ? GROUP BY metric", [yesterday]
         ).fetchall()
+    except sqlite3.OperationalError as e:
+        return {"error": f"Database busy: {e}", "date": today}
     finally:
         conn.close()
 
@@ -4504,16 +4634,19 @@ Return ONLY the JSON. No prose."""
             briefing["cognitive_load"] = cognitive_load
         cognitive_load["meeting_count"] = len(calendar_meetings)
 
-    # Cache it
-    conn = get_db()
+    # Cache it (non-fatal if DB is busy)
     try:
-        conn.execute(
-            "INSERT OR REPLACE INTO briefings (date, content, generated_at) VALUES (?, ?, ?)",
-            [today, json.dumps(briefing), datetime.now().isoformat()]
-        )
-        conn.commit()
-    finally:
-        conn.close()
+        conn = get_db()
+        try:
+            conn.execute(
+                "INSERT OR REPLACE INTO briefings (date, content, generated_at) VALUES (?, ?, ?)",
+                [today, json.dumps(briefing), datetime.now().isoformat()]
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except sqlite3.OperationalError:
+        pass  # Cache miss is acceptable, briefing still returned
 
     return briefing
 
