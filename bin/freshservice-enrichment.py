@@ -651,3 +651,111 @@ def stage_detect_patterns():
         if result["pattern_detected"] and result.get("playbook_draft"):
             print(f"  Pattern detected in bucket '{bucket_id}' — drafting playbook: {result['playbook_draft']['name']}")
             draft_playbook(result["playbook_draft"])
+
+
+# --- Pipeline Orchestrator ---
+
+def fetch_unenriched_cards() -> list:
+    """Get all Freshservice cards needing enrichment."""
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            """SELECT * FROM cards
+               WHERE source = 'freshservice'
+                 AND (enrichment_status = 'not_enriched' OR enrichment_status IS NULL)
+                 AND status = 'pending'
+               ORDER BY timestamp DESC""",
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def enrich_single_card(card: dict) -> bool:
+    """Run full pipeline for a single card: classify -> enrich. Returns True on success."""
+    card_id = card["id"]
+    summary = card.get("summary", "")
+
+    # Mark as enriching
+    conn = get_db()
+    conn.execute("UPDATE cards SET enrichment_status = 'enriching' WHERE id = ?", [card_id])
+    conn.commit()
+    conn.close()
+
+    # Stage 1: Classify
+    classification = stage_classify(card)
+    if not classification:
+        print(f"  [WARN] Classification failed for card {card_id}: {summary[:60]}")
+        conn = get_db()
+        conn.execute("UPDATE cards SET enrichment_status = 'failed' WHERE id = ?", [card_id])
+        conn.commit()
+        conn.close()
+        return False
+
+    print(f"  Classified card {card_id} -> bucket: {classification['bucket_id']}")
+
+    # Reload card with updated metadata from classification
+    conn = get_db()
+    row = conn.execute("SELECT * FROM cards WHERE id = ?", [card_id]).fetchone()
+    conn.close()
+    if row:
+        card = dict(row)
+
+    # Stage 2: Enrich + playbook match
+    enrichment = stage_enrich(card, classification)
+    if not enrichment:
+        print(f"  [WARN] Enrichment failed for card {card_id}: {summary[:60]}")
+        return False
+
+    action_count = len(enrichment.get("proposed_actions", []))
+    pb = "yes" if enrichment.get("playbook_match") else "no"
+    print(f"  Enriched card {card_id}: {action_count} actions, playbook={pb}")
+
+    # Invalidate dashboard for this card
+    invalidate_dashboard()
+    return True
+
+
+def main():
+    now = datetime.now()
+    print(f"[{now}] Freshservice enrichment pipeline starting...")
+
+    cards = fetch_unenriched_cards()
+    if not cards:
+        print("  No cards to enrich.")
+        write_health("ok", 0)
+        return
+
+    print(f"  Found {len(cards)} cards to enrich (parallel workers={MAX_WORKERS})")
+
+    enriched = 0
+    errors = 0
+
+    # Process in parallel batches
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        futures = {executor.submit(enrich_single_card, card): card for card in cards}
+        for future in as_completed(futures):
+            card = futures[future]
+            try:
+                if future.result():
+                    enriched += 1
+                else:
+                    errors += 1
+            except Exception as e:
+                errors += 1
+                print(f"  [ERROR] Card {card.get('id')}: {e}")
+
+    # Stage 3: Pattern detection (once per cycle, after all cards enriched)
+    if enriched > 0:
+        print("  Running pattern detection...")
+        try:
+            stage_detect_patterns()
+        except Exception as e:
+            print(f"  [ERROR] Pattern detection failed: {e}")
+
+    write_health("ok", enriched, errors)
+    print(f"[{datetime.now()}] Done — enriched={enriched}, errors={errors}")
+
+
+if __name__ == "__main__":
+    main()
