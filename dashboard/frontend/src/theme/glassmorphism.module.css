@@ -1,0 +1,17 @@
+.surface {
+  background: var(--bg-glass);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(240, 230, 255, 0.08);
+  border-radius: var(--radius-card);
+}
+
+.surfaceHover {
+  composes: surface;
+  transition: background 0.2s, border-color 0.2s, box-shadow 0.2s;
+}
+
+.surfaceHover:hover {
+  background: var(--bg-glass-hover);
+  border-color: rgba(240, 230, 255, 0.15);
+}
