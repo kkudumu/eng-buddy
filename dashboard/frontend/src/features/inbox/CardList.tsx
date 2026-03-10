@@ -5,7 +5,11 @@ import styles from './CardList.module.css'
 
 export function CardList() {
   const activeSource = useUIStore((s) => s.activeSource)
-  const { data, isLoading } = useCards(activeSource)
+  const { data, isLoading, isError } = useCards(activeSource)
+
+  if (isError) {
+    return <div className={styles.empty}>Failed to load cards. Check your connection.</div>
+  }
 
   if (isLoading) {
     return (

@@ -6,7 +6,7 @@ interface ChibiMascotProps {
 }
 
 const faces: Record<MascotMood, { eyes: string; mouth: string; extras?: string }> = {
-  happy: { eyes: '\u25cf  \u25cf', mouth: '\u03c9', extras: '' },
+  happy: { eyes: '\u25cf  \u25cf', mouth: '\u03c9' },
   thinking: { eyes: '\u25cf  \u25d0', mouth: '\u03c9', extras: '?' },
   sleepy: { eyes: '\u2212  \u2212', mouth: '\u03c9', extras: 'z' },
   excited: { eyes: '\u2727  \u2727', mouth: '\u03c9', extras: '!' },

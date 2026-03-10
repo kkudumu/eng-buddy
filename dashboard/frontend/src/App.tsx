@@ -18,12 +18,8 @@ export default function App() {
   const { data, isLoading } = useCards(activeSource)
 
   const handleSSE = useCallback(
-    (event: SSEEvent) => {
-      if (event.type === 'cache-invalidate') {
-        queryClient.invalidateQueries({ queryKey: ['cards'] })
-      } else {
-        queryClient.invalidateQueries({ queryKey: ['cards'] })
-      }
+    (_event: SSEEvent) => {
+      queryClient.invalidateQueries({ queryKey: ['cards'] })
     },
     [queryClient],
   )
@@ -66,7 +62,7 @@ export default function App() {
       <StatsBar
         needsAction={counts.pending}
         autoResolved={counts.completed}
-        draftAcceptRate={counts.completed > 0 ? Math.round((counts.approved / (counts.approved + counts.failed || 1)) * 100) : 0}
+        draftAcceptRate={(counts.approved + counts.failed) > 0 ? Math.round((counts.approved / (counts.approved + counts.failed)) * 100) : 0}
         timeSavedMinutes={counts.completed * 5}
       />
 
