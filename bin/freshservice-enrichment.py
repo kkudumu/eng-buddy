@@ -154,3 +154,183 @@ def log_enrichment_run(card_id: int, stage: str, model: str, duration_ms: int,
         conn.commit()
     finally:
         conn.close()
+
+
+# --- Stage 1: Classification ---
+
+def load_classification_schema() -> dict:
+    """Load current AI-built schema from DB."""
+    conn = get_db()
+    try:
+        rows = conn.execute("SELECT * FROM classification_buckets").fetchall()
+        buckets = {}
+        for row in rows:
+            buckets[row["id"]] = {
+                "description": row["description"],
+                "knowledge_files": json.loads(row["knowledge_files"] or "[]"),
+                "confidence_keywords": json.loads(row["confidence_keywords"] or "[]"),
+                "ticket_count": row["ticket_count"],
+                "status": row["status"],
+            }
+        return {"buckets": buckets}
+    finally:
+        conn.close()
+
+
+def fast_path_classify(card: dict, schema: dict) -> str | None:
+    """Check vetted buckets' AI-generated keywords. Returns bucket_id or None."""
+    summary_lower = card.get("summary", "").lower()
+    meta = json.loads(card.get("analysis_metadata") or "{}")
+    ticket_type = str(meta.get("type", "")).lower()
+    text = f"{summary_lower} {ticket_type}"
+
+    for bucket_id, bucket in schema.get("buckets", {}).items():
+        if bucket.get("status") != "vetted":
+            continue
+        keywords = bucket.get("confidence_keywords", [])
+        if any(kw.lower() in text for kw in keywords):
+            return bucket_id
+    return None
+
+
+def build_classify_prompt(card: dict, schema: dict) -> str:
+    """Build the classification prompt for a Freshservice ticket."""
+    meta = json.loads(card.get("analysis_metadata") or "{}")
+    summary = card.get("summary", "")
+
+    # List available knowledge files
+    available_knowledge = []
+    if KNOWLEDGE_DIR.exists():
+        available_knowledge = [f.name for f in KNOWLEDGE_DIR.iterdir() if f.suffix == ".md"]
+
+    schema_json = json.dumps(schema.get("buckets", {}), indent=2) if schema.get("buckets") else "{}"
+
+    return (
+        "You are classifying an IT support ticket for an IT systems engineer.\n\n"
+        f"Ticket: {summary}\n"
+        f"Type: {meta.get('type', 'unknown')} | Priority: {meta.get('priority', 'unknown')}\n"
+        f"Status: {meta.get('status', 'unknown')} | Created: {meta.get('created_at', 'unknown')}\n\n"
+        f"Current classification schema:\n{schema_json}\n\n"
+        f"Available knowledge files: {json.dumps(available_knowledge)}\n\n"
+        "Tasks:\n"
+        "1. Classify this ticket into an existing bucket, or propose a new one.\n"
+        "2. List which knowledge files would help resolve this ticket.\n"
+        "3. Provide 3-5 confidence keywords that future similar tickets would contain.\n\n"
+        "Return ONLY valid JSON:\n"
+        "{\n"
+        '  "bucket_id": "kebab-case-name",\n'
+        '  "bucket_description": "what this category covers",\n'
+        '  "is_new_bucket": true/false,\n'
+        '  "knowledge_files": ["file.md"],\n'
+        '  "confidence_keywords": ["keyword1", "keyword2"],\n'
+        '  "reasoning": "one sentence"\n'
+        "}"
+    )
+
+
+def parse_classify_response(raw: str) -> dict | None:
+    """Parse classification JSON from LLM response."""
+    result = _parse_llm_json(raw, "{")
+    if not isinstance(result, dict):
+        return None
+    if "bucket_id" not in result:
+        return None
+    # Normalize
+    result["bucket_id"] = str(result["bucket_id"]).strip().lower().replace(" ", "-")
+    result["is_new_bucket"] = bool(result.get("is_new_bucket", False))
+    result["knowledge_files"] = result.get("knowledge_files", [])
+    if not isinstance(result["knowledge_files"], list):
+        result["knowledge_files"] = []
+    result["confidence_keywords"] = result.get("confidence_keywords", [])
+    if not isinstance(result["confidence_keywords"], list):
+        result["confidence_keywords"] = []
+    return result
+
+
+def save_classification(card_id: int, classification: dict, schema: dict):
+    """Persist classification to card metadata and update schema."""
+    conn = get_db()
+    try:
+        # Update card's analysis_metadata with classification
+        row = conn.execute("SELECT analysis_metadata FROM cards WHERE id = ?", [card_id]).fetchone()
+        meta = json.loads(row["analysis_metadata"] or "{}") if row else {}
+        meta["classification_bucket"] = classification["bucket_id"]
+        meta["classification_knowledge_files"] = classification["knowledge_files"]
+        meta["classification_reasoning"] = classification.get("reasoning", "")
+        conn.execute(
+            "UPDATE cards SET analysis_metadata = ? WHERE id = ?",
+            [json.dumps(meta), card_id],
+        )
+
+        bucket_id = classification["bucket_id"]
+        if classification["is_new_bucket"]:
+            conn.execute(
+                """INSERT OR IGNORE INTO classification_buckets
+                   (id, description, knowledge_files, confidence_keywords, ticket_count, status, created_by_ticket)
+                   VALUES (?, ?, ?, ?, 1, 'emerging', ?)""",
+                [
+                    bucket_id,
+                    classification.get("bucket_description", ""),
+                    json.dumps(classification["knowledge_files"]),
+                    json.dumps(classification["confidence_keywords"]),
+                    card_id,
+                ],
+            )
+        else:
+            conn.execute(
+                """UPDATE classification_buckets
+                   SET ticket_count = ticket_count + 1,
+                       confidence_keywords = ?,
+                       updated_at = datetime('now'),
+                       status = CASE WHEN ticket_count + 1 >= ? THEN 'vetted' ELSE status END
+                   WHERE id = ?""",
+                [json.dumps(classification["confidence_keywords"]), VETTED_THRESHOLD, bucket_id],
+            )
+
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def stage_classify(card: dict) -> dict | None:
+    """Run classification stage. Returns classification dict or None on failure."""
+    card_id = card["id"]
+    schema = load_classification_schema()
+
+    # Try fast-path first (vetted buckets)
+    fast = fast_path_classify(card, schema)
+    if fast:
+        bucket = schema["buckets"][fast]
+        result = {
+            "bucket_id": fast,
+            "bucket_description": bucket["description"],
+            "is_new_bucket": False,
+            "knowledge_files": bucket["knowledge_files"],
+            "confidence_keywords": bucket["confidence_keywords"],
+            "reasoning": "fast-path keyword match",
+        }
+        save_classification(card_id, result, schema)
+        log_enrichment_run(card_id, "classify", "fast-path", 0, "success", f"bucket={fast}")
+        return result
+
+    # AI classification
+    prompt = build_classify_prompt(card, schema)
+    model = STAGE_LLM_CONFIG["classify"]["cli"]
+    start = time.time()
+    try:
+        raw = _run_llm(prompt, "classify", timeout=30)
+        duration_ms = int((time.time() - start) * 1000)
+    except Exception as e:
+        duration_ms = int((time.time() - start) * 1000)
+        log_enrichment_run(card_id, "classify", model, duration_ms, "failed", str(e))
+        return None
+
+    result = parse_classify_response(raw)
+    if not result:
+        log_enrichment_run(card_id, "classify", model, duration_ms, "failed", raw[:200])
+        return None
+
+    save_classification(card_id, result, schema)
+    log_enrichment_run(card_id, "classify", model, duration_ms, "success",
+                        f"bucket={result['bucket_id']} new={result['is_new_bucket']}")
+    return result
