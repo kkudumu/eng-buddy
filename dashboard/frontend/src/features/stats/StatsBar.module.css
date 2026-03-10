@@ -1,0 +1,33 @@
+.bar {
+  display: flex;
+  gap: 16px;
+  padding: 16px 24px;
+}
+
+.stat {
+  flex: 1;
+  background: var(--bg-glass);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(240, 230, 255, 0.08);
+  border-radius: var(--radius-card);
+  padding: 16px 20px;
+  text-align: center;
+}
+
+.value {
+  font-family: var(--font-mono);
+  font-size: 1.8rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  line-height: 1;
+}
+
+.label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-top: 6px;
+}

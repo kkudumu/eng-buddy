@@ -1,0 +1,64 @@
+.card {
+  background: var(--bg-glass);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(240, 230, 255, 0.08);
+  border-radius: var(--radius-card);
+  padding: 16px 20px;
+  cursor: pointer;
+  transition: border-color 0.2s, box-shadow 0.2s, background 0.2s;
+}
+
+.card:hover {
+  background: var(--bg-glass-hover);
+}
+
+.gmail { border-color: rgba(244, 168, 200, 0.25); }
+.gmail:hover { box-shadow: var(--glow-pink); }
+
+.slack { border-color: rgba(144, 227, 178, 0.25); }
+.slack:hover { box-shadow: var(--glow-mint); }
+
+.jira { border-color: rgba(154, 196, 255, 0.25); }
+.jira:hover { box-shadow: var(--glow-blue); }
+
+.freshservice { border-color: rgba(255, 155, 135, 0.25); }
+.freshservice:hover { box-shadow: var(--glow-coral); }
+
+.calendar { border-color: rgba(245, 217, 126, 0.25); }
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.summary {
+  font-weight: 600;
+  font-size: 0.95rem;
+  flex: 1;
+}
+
+.meta {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+
+.draft {
+  margin-top: 10px;
+  padding: 10px 14px;
+  background: rgba(144, 227, 178, 0.06);
+  border: 1px solid rgba(144, 227, 178, 0.2);
+  border-radius: 10px;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}

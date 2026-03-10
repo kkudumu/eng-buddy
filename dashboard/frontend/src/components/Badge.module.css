@@ -1,0 +1,40 @@
+.badge {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  font-weight: 500;
+  padding: 2px 8px;
+  border-radius: var(--radius-badge);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.pink {
+  background: rgba(244, 168, 200, 0.15);
+  color: var(--accent-pink);
+  border: 1px solid rgba(244, 168, 200, 0.3);
+}
+
+.mint {
+  background: rgba(144, 227, 178, 0.15);
+  color: var(--accent-mint);
+  border: 1px solid rgba(144, 227, 178, 0.3);
+}
+
+.blue {
+  background: rgba(154, 196, 255, 0.15);
+  color: var(--accent-blue);
+  border: 1px solid rgba(154, 196, 255, 0.3);
+}
+
+.coral {
+  background: rgba(255, 155, 135, 0.15);
+  color: var(--accent-coral);
+  border: 1px solid rgba(255, 155, 135, 0.3);
+}
+
+.muted {
+  background: rgba(139, 122, 158, 0.15);
+  color: var(--text-muted);
+  border: 1px solid rgba(139, 122, 158, 0.3);
+}
