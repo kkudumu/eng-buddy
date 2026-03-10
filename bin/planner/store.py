@@ -97,6 +97,9 @@ class PlanStore:
         return [dict(r) for r in rows]
 
     def update_status(self, card_id: int, status: str) -> None:
+        from models import VALID_PLAN_STATUSES
+        if status not in VALID_PLAN_STATUSES:
+            raise ValueError(f"Invalid plan status: {status!r}. Must be one of {VALID_PLAN_STATUSES}")
         plan = self.get(card_id)
         if plan:
             plan.status = status

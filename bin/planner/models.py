@@ -5,6 +5,10 @@ from dataclasses import dataclass, field
 from typing import Optional
 from pathlib import Path
 
+VALID_STEP_STATUSES = {"pending", "approved", "skipped", "edited", "executing", "done", "failed"}
+VALID_PLAN_STATUSES = {"pending", "approved", "executing", "completed", "failed"}
+VALID_RISKS = {"low", "medium", "high"}
+
 
 @dataclass
 class PlanStep:

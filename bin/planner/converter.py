@@ -1,10 +1,8 @@
 """Convert Playbook objects into Plan objects for the approval flow."""
 
 import time
-import sys
 import importlib.util
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from models import Plan, Phase, PlanStep
 
