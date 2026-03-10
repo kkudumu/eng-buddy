@@ -96,6 +96,16 @@ class PlanStore:
             conn.close()
         return [dict(r) for r in rows]
 
+    def get_card(self, card_id: int) -> Optional[dict]:
+        """Look up a card from the inbox.db cards table."""
+        conn = sqlite3.connect(str(self.db_path))
+        conn.row_factory = sqlite3.Row
+        try:
+            row = conn.execute("SELECT * FROM cards WHERE id = ?", (card_id,)).fetchone()
+        finally:
+            conn.close()
+        return dict(row) if row else None
+
     def update_status(self, card_id: int, status: str) -> None:
         from models import VALID_PLAN_STATUSES
         if status not in VALID_PLAN_STATUSES:
