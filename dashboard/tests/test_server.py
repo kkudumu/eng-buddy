@@ -197,7 +197,9 @@ async def test_notify_calls_osascript_when_enabled(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_send_debug_log_to_claude_queues_sync_event(tmp_path, monkeypatch):
     sync_file = tmp_path / ".runtime" / "claude-sync-events.txt"
+    db_path = tmp_path / "inbox.db"
     monkeypatch.setattr(server, "CLAUDE_SYNC_FILE", sync_file)
+    monkeypatch.setattr(server, "DB_PATH", db_path)
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         r = await client.post(
@@ -432,14 +434,28 @@ async def test_card_has_required_fields():
             assert field in card, f"missing field: {field}"
 
 @pytest.mark.asyncio
-async def test_hold_card():
+async def test_hold_card(tmp_path, monkeypatch):
+    db_path = tmp_path / "inbox.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """CREATE TABLE cards (
+            id INTEGER PRIMARY KEY, source TEXT, timestamp TEXT,
+            summary TEXT, classification TEXT, status TEXT,
+            proposed_actions TEXT, section TEXT, draft_response TEXT,
+            context_notes TEXT, responded INTEGER
+        )"""
+    )
+    conn.execute(
+        """INSERT INTO cards
+           (id, source, timestamp, summary, classification, status, proposed_actions, section, responded)
+           VALUES (1, 'slack', '2026-03-09T10:00:00+00:00', 'Test card', 'normal', 'pending', '[]', 'needs-action', 0)"""
+    )
+    conn.commit()
+    conn.close()
+    monkeypatch.setattr(server, "DB_PATH", db_path)
+
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        r = await client.get("/api/cards")
-        cards = r.json()["cards"]
-        if not cards:
-            pytest.skip("no cards in DB")
-        card_id = cards[0]["id"]
-        r2 = await client.post(f"/api/cards/{card_id}/hold")
+        r2 = await client.post("/api/cards/1/hold")
     assert r2.status_code == 200
     assert r2.json()["status"] == "held"
 
@@ -452,6 +468,66 @@ async def test_inbox_view_endpoint():
     data = r.json()
     assert "needs_action" in data
     assert "no_action" in data
+
+
+@pytest.mark.asyncio
+async def test_inbox_view_collapses_gmail_duplicates_and_prefers_draft(tmp_path, monkeypatch):
+    db_path = tmp_path / "inbox.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """CREATE TABLE cards (
+            id INTEGER PRIMARY KEY,
+            source TEXT,
+            timestamp TEXT,
+            summary TEXT,
+            classification TEXT,
+            status TEXT,
+            proposed_actions TEXT,
+            section TEXT,
+            draft_response TEXT,
+            context_notes TEXT,
+            responded INTEGER,
+            analysis_metadata TEXT
+        )"""
+    )
+    now = datetime.now(timezone.utc)
+    actions = json.dumps([{
+        "message_id": "msg-21",
+        "thread_id": "thread-21",
+        "to_email": "jeannette.vivas@klaviyo.com",
+        "subject": "Invitation: Kioja / Jeannette",
+    }])
+    duplicate_actions = json.dumps([{
+        "message_id": "msg-22",
+        "thread_id": "thread-21",
+        "to_email": "jeannette.vivas@klaviyo.com",
+        "subject": "Invitation: Kioja / Jeannette",
+    }])
+    conn.execute(
+        """INSERT INTO cards
+           (id, source, timestamp, summary, classification, status, proposed_actions, section, draft_response, context_notes, responded, analysis_metadata)
+           VALUES (21, 'gmail', ?, 'Jeannette Vivas <jeannette.vivas@klaviyo.com>: Invitation: Kioja / Jeannette', 'needs-response', 'pending', ?, 'needs-action', '', 'first copy', 0, '{}')""",
+        [(now - timedelta(minutes=10)).isoformat(), actions],
+    )
+    conn.execute(
+        """INSERT INTO cards
+           (id, source, timestamp, summary, classification, status, proposed_actions, section, draft_response, context_notes, responded, analysis_metadata)
+           VALUES (22, 'gmail', ?, 'Jeannette Vivas <jeannette.vivas@klaviyo.com>: Invitation: Kioja / Jeannette [2026-03-09 21:23 b99692]', 'needs-response', 'pending', ?, 'needs-action', 'Draft reply', 'duplicate copy', 0, '{}')""",
+        [now.isoformat(), duplicate_actions],
+    )
+    conn.commit()
+    conn.close()
+    monkeypatch.setattr(server, "DB_PATH", db_path)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r = await client.get("/api/inbox-view", params={"source": "gmail", "days": 3})
+
+    assert r.status_code == 200
+    payload = r.json()
+    assert len(payload["needs_action"]) == 1
+    assert payload["needs_action"][0]["id"] == 22
+    assert payload["needs_action"][0]["draft_response"] == "Draft reply"
+    assert payload["needs_action"][0]["analysis_metadata"]["duplicate_count"] == 2
 
 
 @pytest.mark.asyncio
@@ -591,10 +667,23 @@ async def test_close_task_endpoint_updates_all_matching_blocks(tmp_path, monkeyp
 """,
         encoding="utf-8",
     )
+    db_path = tmp_path / "inbox.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """CREATE TABLE cards (
+            id INTEGER PRIMARY KEY, source TEXT, timestamp TEXT,
+            summary TEXT, classification TEXT, status TEXT,
+            proposed_actions TEXT, section TEXT, draft_response TEXT,
+            context_notes TEXT, responded INTEGER
+        )"""
+    )
+    conn.commit()
+    conn.close()
     monkeypatch.setattr(server, "TASKS_FILE", tasks_file)
     monkeypatch.setattr(server, "DAILY_DIR", tmp_path / "daily")
     monkeypatch.setattr(server, "RUNTIME_DIR", tmp_path / ".runtime")
     monkeypatch.setattr(server, "CLAUDE_SYNC_FILE", tmp_path / ".runtime" / "claude-sync-events.txt")
+    monkeypatch.setattr(server, "DB_PATH", db_path)
     monkeypatch.setattr(
         server,
         "_build_task_daily_log_line",
@@ -644,8 +733,21 @@ async def test_task_daily_log_endpoint_appends_entry(tmp_path, monkeypatch):
     )
 
     daily_dir = tmp_path / "daily"
+    db_path = tmp_path / "inbox.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """CREATE TABLE cards (
+            id INTEGER PRIMARY KEY, source TEXT, timestamp TEXT,
+            summary TEXT, classification TEXT, status TEXT,
+            proposed_actions TEXT, section TEXT, draft_response TEXT,
+            context_notes TEXT, responded INTEGER
+        )"""
+    )
+    conn.commit()
+    conn.close()
     monkeypatch.setattr(server, "TASKS_FILE", tasks_file)
     monkeypatch.setattr(server, "DAILY_DIR", daily_dir)
+    monkeypatch.setattr(server, "DB_PATH", db_path)
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         decision = await client.post(
@@ -1017,7 +1119,13 @@ async def test_archive_email_requires_decision_and_moves_card_to_no_action(tmp_p
         """INSERT INTO cards
            (id, source, summary, status, section, proposed_actions)
            VALUES (13, 'gmail', 'updates@example.com: Weekly digest', 'pending', 'needs-action', ?)""",
-        [json.dumps([{"message_id": "msg-13", "to_email": "updates@example.com", "subject": "Weekly digest"}])],
+        [json.dumps([{"message_id": "msg-13", "thread_id": "thread-13", "to_email": "updates@example.com", "subject": "Weekly digest"}])],
+    )
+    conn.execute(
+        """INSERT INTO cards
+           (id, source, summary, status, section, proposed_actions)
+           VALUES (14, 'gmail', 'updates@example.com: Weekly digest [2026-03-10 10:01 4f7ac1]', 'pending', 'needs-action', ?)""",
+        [json.dumps([{"message_id": "msg-14", "thread_id": "thread-13", "to_email": "updates@example.com", "subject": "Weekly digest"}])],
     )
     conn.commit()
     conn.close()
@@ -1053,10 +1161,12 @@ async def test_archive_email_requires_decision_and_moves_card_to_no_action(tmp_p
     assert ok.json()["status"] == "archived"
 
     check = sqlite3.connect(db_path)
-    status, section = check.execute("SELECT status, section FROM cards WHERE id = 13").fetchone()
+    rows = check.execute("SELECT id, status, section FROM cards WHERE id IN (13, 14) ORDER BY id").fetchall()
     check.close()
-    assert status == "completed"
-    assert section == "no-action"
+    assert rows == [
+        (13, "completed", "no-action"),
+        (14, "completed", "no-action"),
+    ]
 
 
 @pytest.mark.asyncio
