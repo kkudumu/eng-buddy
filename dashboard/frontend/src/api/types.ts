@@ -118,3 +118,10 @@ export interface RegenerateResponse {
   status: 'queued';
   feedback: string;
 }
+
+export interface SettingsResponse {
+  terminal: string
+  macos_notifications: boolean
+  theme: string
+  mode: string
+}

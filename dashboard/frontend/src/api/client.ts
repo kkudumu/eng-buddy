@@ -7,6 +7,8 @@ import type {
   ApproveRemainingResponse,
   ExecuteResponse,
   RegenerateResponse,
+  SettingsResponse,
+  PollersResponse,
 } from './types'
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
@@ -76,4 +78,62 @@ export async function regeneratePlan(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ feedback }),
   });
+}
+
+export async function fetchSettings(): Promise<SettingsResponse> {
+  return request<SettingsResponse>('/api/settings')
+}
+
+export async function updateSettings(body: Partial<SettingsResponse>): Promise<SettingsResponse> {
+  return request<SettingsResponse>('/api/settings', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
+export async function fetchPollers(): Promise<PollersResponse> {
+  return request('/api/pollers/status')
+}
+
+export async function syncPoller(pollerId: string): Promise<{ status: string }> {
+  return request(`/api/pollers/${pollerId}/sync`, { method: 'POST' })
+}
+
+export async function postRestart(): Promise<{ status: string }> {
+  return request('/api/restart', { method: 'POST' })
+}
+
+export async function postDecision(
+  entity: 'cards' | 'tasks',
+  id: number,
+  action: string,
+  decision: string,
+  reason?: string,
+): Promise<{ card_id?: number; task_number?: number; action: string; decision: string; decision_event_id: number; action_step_id: number }> {
+  return request(`/api/${entity}/${id}/decision`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action, decision, reason }),
+  })
+}
+
+export async function fetchPlaybooks(): Promise<{ playbooks: Array<{ id: string; name: string; trigger: string; confidence: number; steps: Array<{ summary: string; tool: string }>; executions: number }> }> {
+  return request('/api/playbooks')
+}
+
+export async function fetchPlaybookDrafts(): Promise<{ drafts: Array<{ id: string; name: string; trigger: string; confidence: number; steps: Array<{ summary: string; tool: string }> }> }> {
+  return request('/api/playbooks/drafts')
+}
+
+export async function executePlaybook(
+  playbookId: string,
+  ticketContext: Record<string, unknown>,
+  approval: string,
+): Promise<{ status: string }> {
+  return request('/api/playbooks/execute', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ playbook_id: playbookId, ticket_context: ticketContext, approval }),
+  })
 }
