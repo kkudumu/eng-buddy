@@ -1,0 +1,8 @@
+.container {
+  width: 100%;
+  min-height: 300px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm, 0);
+  overflow: hidden;
+  margin-top: 0.5rem;
+}

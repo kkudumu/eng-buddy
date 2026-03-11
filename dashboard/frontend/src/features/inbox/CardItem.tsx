@@ -1,7 +1,9 @@
+import { useState, useCallback } from 'react'
 import type { Card } from '../../api/types'
 import { Badge } from '../../components/Badge'
 import { ActionTray } from './ActionTray'
-import { performCardAction } from '../../api/client'
+import { Terminal } from '../terminal/Terminal'
+import { postDecision, performCardAction } from '../../api/client'
 import { useUIStore } from '../../stores/ui'
 import { useToastStore } from '../../stores/toast'
 import styles from './CardItem.module.css'
@@ -29,15 +31,25 @@ export function CardItem({ card, style }: CardItemProps) {
   const toggleExpandedActions = useUIStore((s) => s.toggleExpandedActions)
   const addToast = useToastStore((s) => s.addToast)
   const isExpanded = expandedActions.has(card.id)
+  const [running, setRunning] = useState(false)
+  const [decisionEventId, setDecisionEventId] = useState<number | null>(null)
 
   const handleApprove = async () => {
     try {
-      await performCardAction(card.id, 'approve')
-      addToast(`Card #${card.id} approved`, 'success')
+      const result = await postDecision('cards', card.id, 'approve', 'approved')
+      setDecisionEventId(result.decision_event_id)
+      setRunning(true)
+      await performCardAction(card.id, 'approve', { decision_event_id: result.decision_event_id })
     } catch {
       addToast(`Failed to approve card #${card.id}`, 'error')
     }
   }
+
+  const handleTerminalClose = useCallback(() => {
+    setRunning(false)
+    setDecisionEventId(null)
+    addToast(`Card #${card.id} execution complete`, 'info')
+  }, [card.id, addToast])
 
   return (
     <div
@@ -56,9 +68,14 @@ export function CardItem({ card, style }: CardItemProps) {
       {card.draft_response && (
         <div className={styles.draft}>{card.draft_response}</div>
       )}
-      {isExpanded && (
+      {isExpanded && !running && (
         <div onClick={(e) => e.stopPropagation()}>
           <ActionTray card={card} onApprove={handleApprove} />
+        </div>
+      )}
+      {running && decisionEventId != null && (
+        <div onClick={(e) => e.stopPropagation()}>
+          <Terminal cardId={card.id} decisionEventId={decisionEventId} onClose={handleTerminalClose} />
         </div>
       )}
     </div>
