@@ -14,7 +14,7 @@ const LABELS: Record<Phase, string> = {
 
 export function RestartButton() {
   const [phase, setPhase] = useState<Phase>('idle')
-  const timerRef = useRef<ReturnType<typeof setTimeout>>()
+  const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined)
   const handleClick = useCallback(async () => {
     if (phase === 'restarting' || phase === 'syncing') return
     setPhase('restarting')
