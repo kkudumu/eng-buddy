@@ -1651,10 +1651,7 @@ async def serve_react(path: str = ""):
 @app.get("/")
 async def root():
     from starlette.responses import RedirectResponse
-    react_dir = Path(__file__).parent / "static-react"
-    if react_dir.exists():
-        return RedirectResponse(url="/app", status_code=302)
-    return FileResponse(str(STATIC_DIR / "index.html"))
+    return RedirectResponse(url="/app", status_code=302)
 
 @app.get("/api/health")
 async def health():

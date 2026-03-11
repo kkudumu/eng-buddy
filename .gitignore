@@ -113,7 +113,7 @@ action-log.md
 # Frontend build artifacts
 dashboard/frontend/node_modules/
 dashboard/frontend/dist/
-dashboard/static-react/
+# dashboard/static-react/ — tracked: production build output
 
 # Git worktrees
 .worktrees/
