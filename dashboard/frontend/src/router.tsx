@@ -3,6 +3,7 @@ import { AppLayout } from './layouts/AppLayout'
 import App from './App'
 import { TasksView } from './features/tasks/TasksView'
 import { JiraSprintView } from './features/jira/JiraSprintView'
+import { CalendarView } from './features/calendar/CalendarView'
 
 const PlaceholderView = ({ name }: { name: string }) => (
   <div style={{ padding: '2rem', color: 'var(--text)', fontFamily: 'var(--font)' }}>
@@ -21,7 +22,7 @@ export const router = createBrowserRouter(
         { path: 'inbox/:source', element: <App /> },
         { path: 'tasks', element: <TasksView /> },
         { path: 'jira', element: <JiraSprintView /> },
-        { path: 'calendar', element: <PlaceholderView name="Calendar" /> },
+        { path: 'calendar', element: <CalendarView /> },
         { path: 'daily', element: <PlaceholderView name="Daily Log" /> },
         { path: 'learnings', element: <PlaceholderView name="Learnings" /> },
         { path: 'knowledge', element: <PlaceholderView name="Knowledge" /> },

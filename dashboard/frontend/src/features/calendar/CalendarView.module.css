@@ -1,0 +1,20 @@
+.container { padding: 1rem; }
+.heading { font-family: var(--font-heading, var(--font)); color: var(--text); font-size: 1.2rem; margin-bottom: 1rem; }
+.loading, .empty { color: var(--muted); font-family: var(--font-mono); padding: 2rem; }
+.section { margin-bottom: 1.5rem; }
+.sectionTitle { font-family: var(--font-mono); font-size: 0.75rem; color: var(--muted); margin-bottom: 0.5rem; letter-spacing: 0.05em; }
+.event {
+  display: flex; align-items: center; gap: 1rem;
+  background: var(--card-bg); border: 1px solid var(--border-subtle);
+  border-radius: var(--radius, 8px); padding: 0.75rem; margin-bottom: 0.5rem;
+}
+.time { font-family: var(--font-mono); font-size: 0.85rem; color: var(--jira); min-width: 60px; }
+.details { flex: 1; }
+.title { font-size: 0.9rem; color: var(--text); font-weight: 500; }
+.summary { font-size: 0.75rem; color: var(--muted); margin-top: 0.15rem; }
+.eventActions { display: flex; gap: 0.5rem; }
+.eventActions button {
+  font-family: var(--font-mono); font-size: 0.7rem; padding: 3px 8px;
+  border: 1px solid var(--border-subtle); background: var(--surface);
+  color: var(--text); border-radius: var(--radius-sm, 4px); cursor: pointer;
+}
