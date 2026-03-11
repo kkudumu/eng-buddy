@@ -1,0 +1,27 @@
+.editor { padding: 1rem; background: var(--surface); border: 1px solid var(--border-subtle); border-radius: var(--radius, 8px); margin-bottom: 0.75rem; }
+.header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem; }
+.title { font-family: var(--font-heading, var(--font)); font-size: 0.95rem; color: var(--text); margin: 0; }
+.description { font-family: var(--font-mono); font-size: 0.7rem; color: var(--muted); margin: 0 0 0.75rem; }
+.actions { display: flex; gap: 0.5rem; }
+.loading { color: var(--muted); font-family: var(--font-mono); padding: 1rem; }
+
+.table { width: 100%; border-collapse: collapse; font-family: var(--font-mono); font-size: 0.75rem; }
+.th { text-align: left; padding: 0.3rem 0.5rem; color: var(--muted); border-bottom: 1px solid var(--border-subtle); font-size: 0.65rem; text-transform: uppercase; }
+.td { padding: 0.3rem 0.5rem; color: var(--text); border-bottom: 1px solid var(--border-faint); }
+.tdTool { padding: 0.3rem 0.5rem; color: var(--jira); border-bottom: 1px solid var(--border-faint); font-size: 0.65rem; }
+.row:hover { background: var(--hover-bg); }
+
+.input { width: 100%; font-family: var(--font-mono); font-size: 0.75rem; padding: 2px 6px; border: 1px solid var(--border-subtle); background: var(--card-bg); color: var(--text); border-radius: var(--radius-sm, 4px); }
+
+.promoteBtn, .deleteBtn, .closeBtn, .editBtn, .saveBtn, .cancelBtn, .moveBtn, .deleteStepBtn {
+  font-family: var(--font-mono); font-size: 0.65rem; padding: 2px 8px;
+  border: 1px solid var(--border-subtle); background: transparent; color: var(--text);
+  border-radius: var(--radius-sm, 4px); cursor: pointer;
+}
+.promoteBtn { border-color: var(--fresh); color: var(--fresh); }
+.promoteBtn:hover { background: var(--hover-bg); }
+.deleteBtn { border-color: var(--urgent); color: var(--urgent); }
+.deleteBtn:hover { background: var(--hover-bg); }
+.deleteStepBtn { border-color: var(--urgent); color: var(--urgent); }
+.editBtn:hover, .saveBtn:hover, .cancelBtn:hover, .moveBtn:hover { background: var(--hover-bg); }
+.moveBtn:disabled { opacity: 0.3; cursor: default; }
