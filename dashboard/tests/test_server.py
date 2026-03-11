@@ -38,7 +38,7 @@ async def test_restart_uses_launchd_managed_start_script(monkeypatch):
     assert r.status_code == 200
     assert r.json() == {"status": "restarting", "mode": "fresh", "manager": "launchd"}
     assert captured["args"][0] == "/bin/bash"
-    assert captured["args"][1].endswith("/dashboard/start.sh")
+    assert Path(captured["args"][1]).resolve().name == "start.sh"
     assert captured["args"][2] == "--restart-fresh"
     assert captured["start_new_session"] is True
 

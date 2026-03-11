@@ -1,29 +1,42 @@
-import { NavLink } from 'react-router-dom'
+import { useUIStore } from '../../stores/ui'
+import type { CardCounts, CardSource } from '../../api/types'
 import styles from './Sidebar.module.css'
 
-const navItems = [
-  { to: '/app/inbox', label: 'Inbox' },
-  { to: '/app/tasks', label: 'Tasks' },
-  { to: '/app/jira', label: 'Jira' },
-  { to: '/app/calendar', label: 'Calendar' },
-  { to: '/app/daily', label: 'Daily' },
-  { to: '/app/learnings', label: 'Learnings' },
-  { to: '/app/knowledge', label: 'Knowledge' },
-  { to: '/app/suggestions', label: 'Suggestions' },
-  { to: '/app/playbooks', label: 'Playbooks' },
+interface SidebarProps {
+  counts: CardCounts
+  sourceCounts: Record<string, number>
+}
+
+const sources: { key: CardSource; label: string }[] = [
+  { key: 'all', label: 'All' },
+  { key: 'gmail', label: 'Gmail' },
+  { key: 'slack', label: 'Slack' },
+  { key: 'jira', label: 'Jira' },
+  { key: 'freshservice', label: 'Freshservice' },
+  { key: 'calendar', label: 'Calendar' },
+  { key: 'tasks', label: 'Tasks' },
 ]
 
-export function Sidebar() {
+export function Sidebar({ counts, sourceCounts }: SidebarProps) {
+  const activeSource = useUIStore((s) => s.activeSource)
+  const setActiveSource = useUIStore((s) => s.setActiveSource)
+
+  const getCount = (key: CardSource): number => {
+    if (key === 'all') return counts.pending
+    return sourceCounts[key] ?? 0
+  }
+
   return (
     <nav className={styles.sidebar}>
-      {navItems.map(({ to, label }) => (
-        <NavLink
-          key={to}
-          to={to}
-          className={({ isActive }) => `${styles.item} ${isActive ? styles.active : ''}`}
+      {sources.map(({ key, label }) => (
+        <button
+          key={key}
+          className={`${styles.item} ${activeSource === key ? styles.active : ''}`}
+          onClick={() => setActiveSource(key)}
         >
           <span>{label}</span>
-        </NavLink>
+          {getCount(key) > 0 && <span className={styles.count}>{getCount(key)}</span>}
+        </button>
       ))}
     </nav>
   )

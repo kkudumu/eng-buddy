@@ -1,0 +1,86 @@
+.editor {
+  margin-top: 10px;
+  padding: 14px 16px;
+  background: rgba(154, 196, 255, 0.06);
+  border: 1px solid rgba(154, 196, 255, 0.2);
+  border-radius: 10px;
+}
+
+.editorHeader {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.editorTitle {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--text-primary, #f0e6ff);
+}
+
+.editorTool {
+  font-size: 0.75rem;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  background: rgba(240, 230, 255, 0.08);
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+
+.field {
+  margin-bottom: 12px;
+}
+
+.label {
+  display: block;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 6px;
+}
+
+.textarea {
+  width: 100%;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(240, 230, 255, 0.12);
+  border-radius: 8px;
+  color: var(--text-primary, #f0e6ff);
+  font-size: 0.85rem;
+  font-family: var(--font-mono);
+  resize: vertical;
+  line-height: 1.5;
+  transition: border-color 0.2s;
+  box-sizing: border-box;
+}
+
+.textarea:focus {
+  outline: none;
+  border-color: rgba(154, 196, 255, 0.5);
+}
+
+.input {
+  width: 100%;
+  padding: 8px 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(240, 230, 255, 0.12);
+  border-radius: 8px;
+  color: var(--text-primary, #f0e6ff);
+  font-size: 0.85rem;
+  transition: border-color 0.2s;
+  box-sizing: border-box;
+}
+
+.input:focus {
+  outline: none;
+  border-color: rgba(154, 196, 255, 0.5);
+}
+
+.editorActions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}

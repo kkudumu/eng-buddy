@@ -1,46 +1,46 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
-import { MemoryRouter } from 'react-router-dom'
+import userEvent from '@testing-library/user-event'
 import { Sidebar } from '../Sidebar'
+import { useUIStore } from '../../../stores/ui'
 
-function renderSidebar(initialPath = '/app/inbox') {
-  return render(
-    <MemoryRouter initialEntries={[initialPath]}>
-      <Sidebar />
-    </MemoryRouter>,
-  )
+beforeEach(() => {
+  useUIStore.setState({ activeSource: 'all' })
+})
+
+const mockCounts = { pending: 5, held: 2, approved: 3, completed: 10, failed: 1 }
+const mockSourceCounts: Record<string, number> = {
+  gmail: 3,
+  slack: 2,
+  jira: 4,
+  freshservice: 1,
+  calendar: 2,
 }
 
 describe('Sidebar', () => {
-  it('renders all nav items', () => {
-    renderSidebar()
-    expect(screen.getByText('Inbox')).toBeInTheDocument()
-    expect(screen.getByText('Tasks')).toBeInTheDocument()
+  it('renders all source filters', () => {
+    render(<Sidebar counts={mockCounts} sourceCounts={mockSourceCounts} />)
+    expect(screen.getByText('All')).toBeInTheDocument()
+    expect(screen.getByText('Gmail')).toBeInTheDocument()
+    expect(screen.getByText('Slack')).toBeInTheDocument()
     expect(screen.getByText('Jira')).toBeInTheDocument()
-    expect(screen.getByText('Calendar')).toBeInTheDocument()
-    expect(screen.getByText('Daily')).toBeInTheDocument()
-    expect(screen.getByText('Learnings')).toBeInTheDocument()
-    expect(screen.getByText('Knowledge')).toBeInTheDocument()
-    expect(screen.getByText('Suggestions')).toBeInTheDocument()
-    expect(screen.getByText('Playbooks')).toBeInTheDocument()
   })
 
-  it('renders nav items as links', () => {
-    renderSidebar()
-    const inboxLink = screen.getByText('Inbox').closest('a')
-    expect(inboxLink).toBeInTheDocument()
-    expect(inboxLink).toHaveAttribute('href', '/app/inbox')
+  it('shows count badges', () => {
+    render(<Sidebar counts={mockCounts} sourceCounts={mockSourceCounts} />)
+    expect(screen.getByText('3')).toBeInTheDocument() // gmail
   })
 
-  it('highlights active nav item', () => {
-    renderSidebar('/app/tasks')
-    const tasksLink = screen.getByText('Tasks').closest('a')
-    expect(tasksLink?.className).toContain('active')
+  it('highlights active source', () => {
+    useUIStore.setState({ activeSource: 'gmail' })
+    render(<Sidebar counts={mockCounts} sourceCounts={mockSourceCounts} />)
+    const gmailItem = screen.getByText('Gmail').closest('button')
+    expect(gmailItem?.className).toContain('active')
   })
 
-  it('does not highlight inactive nav items', () => {
-    renderSidebar('/app/inbox')
-    const tasksLink = screen.getByText('Tasks').closest('a')
-    expect(tasksLink?.className).not.toContain('active')
+  it('changes active source on click', async () => {
+    render(<Sidebar counts={mockCounts} sourceCounts={mockSourceCounts} />)
+    await userEvent.click(screen.getByText('Slack'))
+    expect(useUIStore.getState().activeSource).toBe('slack')
   })
 })

@@ -21,24 +21,3 @@
   -webkit-text-fill-color: transparent;
   background-clip: text;
 }
-
-.briefingBtn {
-  font-family: var(--font-mono);
-  font-size: 0.7rem;
-  padding: 3px 10px;
-  border: 1px solid var(--border-subtle);
-  background: transparent;
-  color: var(--text);
-  border-radius: var(--radius-sm, 4px);
-  cursor: pointer;
-}
-
-.briefingBtn:hover {
-  background: var(--hover-bg);
-}
-
-.controls {
-  display: flex;
-  gap: 0.5rem;
-  align-items: center;
-}

@@ -23,7 +23,6 @@
   transition: all 0.15s;
   width: 100%;
   text-align: left;
-  text-decoration: none;
 }
 
 .item:hover {

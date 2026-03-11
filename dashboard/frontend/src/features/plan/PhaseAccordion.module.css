@@ -1,0 +1,54 @@
+.phase {
+  border: 1px solid rgba(240, 230, 255, 0.08);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.phaseHeader {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 14px;
+  background: rgba(255, 255, 255, 0.04);
+  border: none;
+  cursor: pointer;
+  color: var(--text-primary, #f0e6ff);
+  text-align: left;
+  transition: background 0.2s;
+}
+
+.phaseHeader:hover {
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.chevron {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.phaseName {
+  flex: 1;
+  font-size: 0.85rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+
+.phaseProgress {
+  font-size: 0.75rem;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  background: rgba(240, 230, 255, 0.08);
+  padding: 2px 8px;
+  border-radius: 20px;
+}
+
+.phaseBody {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px 12px;
+}

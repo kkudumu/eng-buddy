@@ -1,103 +1,102 @@
-"""Playbook Manager — storage, matching, promotion, versioning."""
+"""PlaybookManager - CRUD and matching for playbooks."""
 
-import re
-import shutil
-from pathlib import Path
-from typing import Optional
-from models import Playbook
+import json
+import os
+from typing import List, Optional
 
-_VALID_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
-
-
-def _validate_playbook_id(playbook_id: str) -> str:
-    """Validate playbook_id is safe for use as a filename. Raises ValueError on bad input."""
-    if not playbook_id or not _VALID_ID_RE.match(playbook_id) or ".." in playbook_id:
-        raise ValueError(f"Invalid playbook ID: {playbook_id!r} (must be lowercase alphanumeric with hyphens)")
-    return playbook_id
+from .models import Playbook
 
 
 class PlaybookManager:
+    """Manages approved and draft playbooks on disk as JSON files."""
+
     def __init__(self, playbooks_dir: str):
-        self.base = Path(playbooks_dir)
-        self.approved_dir = self.base
-        self.drafts_dir = self.base / "drafts"
-        self.archive_dir = self.base / "archive"
-        for d in [self.approved_dir, self.drafts_dir, self.archive_dir]:
-            d.mkdir(parents=True, exist_ok=True)
+        self.playbooks_dir = playbooks_dir
+        self.approved_dir = playbooks_dir  # approved live at root
+        self.drafts_dir = os.path.join(playbooks_dir, "drafts")
+        self.archive_dir = os.path.join(playbooks_dir, "archive")
+        os.makedirs(self.approved_dir, exist_ok=True)
+        os.makedirs(self.drafts_dir, exist_ok=True)
+        os.makedirs(self.archive_dir, exist_ok=True)
 
-    def save(self, playbook: Playbook, archive_previous: bool = False) -> str:
-        _validate_playbook_id(playbook.id)
-        path = self.approved_dir / f"{playbook.id}.yml"
-        if archive_previous and path.exists():
-            old = Playbook.load(str(path))
-            self._archive(old)
-        playbook.save(str(path))
-        return str(path)
+    # --- Read ---
 
-    def save_draft(self, playbook: Playbook) -> str:
-        _validate_playbook_id(playbook.id)
-        path = self.drafts_dir / f"{playbook.id}.yml"
-        playbook.save(str(path))
-        return str(path)
+    def _load_from_dir(self, directory: str) -> List[Playbook]:
+        playbooks = []
+        for f in sorted(os.listdir(directory)):
+            if not f.endswith(".json"):
+                continue
+            path = os.path.join(directory, f)
+            try:
+                with open(path) as fh:
+                    playbooks.append(Playbook.from_dict(json.load(fh)))
+            except (json.JSONDecodeError, KeyError):
+                continue
+        return playbooks
+
+    def list_playbooks(self) -> List[Playbook]:
+        return self._load_from_dir(self.approved_dir)
+
+    def list_drafts(self) -> List[Playbook]:
+        return self._load_from_dir(self.drafts_dir)
 
     def get(self, playbook_id: str) -> Optional[Playbook]:
-        _validate_playbook_id(playbook_id)
-        path = self.approved_dir / f"{playbook_id}.yml"
-        if path.exists():
-            return Playbook.load(str(path))
+        for pb in self.list_playbooks():
+            if pb.id == playbook_id:
+                return pb
         return None
 
     def get_draft(self, playbook_id: str) -> Optional[Playbook]:
-        _validate_playbook_id(playbook_id)
-        path = self.drafts_dir / f"{playbook_id}.yml"
-        if path.exists():
-            return Playbook.load(str(path))
+        for pb in self.list_drafts():
+            if pb.id == playbook_id:
+                return pb
         return None
 
-    def list_playbooks(self) -> list:
-        return [
-            Playbook.load(str(p))
-            for p in sorted(self.approved_dir.glob("*.yml"))
-            if p.name != "_registry.yml" and not p.name.endswith(".defaults.yml")
-        ]
+    # --- Write ---
 
-    def list_drafts(self) -> list:
-        return [Playbook.load(str(p)) for p in sorted(self.drafts_dir.glob("*.yml"))]
+    def _save(self, pb: Playbook, directory: str) -> str:
+        path = os.path.join(directory, f"{pb.id}.json")
+        with open(path, "w") as fh:
+            json.dump(pb.to_dict(), fh, indent=2)
+        return path
 
-    def match_ticket(self, ticket_type: str = "", text: str = "", source: str = "") -> list:
-        matches = []
-        for pb in self.list_playbooks():
-            if pb.matches(ticket_type=ticket_type, text=text, source=source):
-                matches.append(pb)
-        return sorted(matches, key=lambda p: p.executions, reverse=True)
+    def save_playbook(self, pb: Playbook) -> str:
+        return self._save(pb, self.approved_dir)
+
+    def save_draft(self, pb: Playbook) -> str:
+        return self._save(pb, self.drafts_dir)
 
     def promote_draft(self, playbook_id: str) -> Optional[Playbook]:
-        _validate_playbook_id(playbook_id)
-        draft_path = self.drafts_dir / f"{playbook_id}.yml"
-        if not draft_path.exists():
+        pb = self.get_draft(playbook_id)
+        if not pb:
             return None
-        pb = Playbook.load(str(draft_path))
-        self.save(pb)
-        draft_path.unlink()
+        # Move from drafts to approved
+        draft_path = os.path.join(self.drafts_dir, f"{pb.id}.json")
+        self.save_playbook(pb)
+        if os.path.exists(draft_path):
+            os.remove(draft_path)
         return pb
 
     def delete_draft(self, playbook_id: str) -> bool:
-        _validate_playbook_id(playbook_id)
-        path = self.drafts_dir / f"{playbook_id}.yml"
-        if path.exists():
-            path.unlink()
+        path = os.path.join(self.drafts_dir, f"{playbook_id}.json")
+        if os.path.exists(path):
+            os.remove(path)
             return True
         return False
 
-    def _archive(self, playbook: Playbook) -> None:
-        archive_path = self.archive_dir / playbook.id
-        archive_path.mkdir(parents=True, exist_ok=True)
-        dest = archive_path / f"v{playbook.version}.yml"
-        playbook.save(str(dest))
+    # --- Matching ---
 
-    def list_archive(self, playbook_id: str) -> list:
-        _validate_playbook_id(playbook_id)
-        archive_path = self.archive_dir / playbook_id
-        if not archive_path.exists():
-            return []
-        return [Playbook.load(str(p)) for p in sorted(archive_path.glob("*.yml"))]
+    def match_ticket(self, ticket_type: str = "", text: str = "", source: str = "") -> List[Playbook]:
+        """Find playbooks whose trigger_keywords match the given text."""
+        text_lower = text.lower()
+        matches = []
+        for pb in self.list_playbooks():
+            score = 0
+            for kw in pb.trigger_keywords:
+                if kw.lower() in text_lower:
+                    score += 1
+            if score > 0:
+                # Temporarily set confidence based on keyword hit ratio
+                pb.confidence = round(score / max(len(pb.trigger_keywords), 1), 2)
+                matches.append(pb)
+        return sorted(matches, key=lambda p: p.confidence, reverse=True)

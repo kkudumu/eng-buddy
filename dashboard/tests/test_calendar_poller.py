@@ -61,46 +61,10 @@ def test_fetch_events_fans_out_by_day_and_dedupes(monkeypatch):
 
     monkeypatch.setattr(module, "_fetch_events_for_date", fake_fetch)
 
-    events, had_errors = module.fetch_events()
+    events = module.fetch_events()
 
     assert requested_dates == [date(2026, 3, 9), date(2026, 3, 10), date(2026, 3, 11)]
-    assert had_errors is False
     assert events == [
         {"id": "evt-1", "summary": "Sprint Planning", "start": "2026-03-09T07:30:00-07:00", "end": "2026-03-09T08:00:00-07:00"},
         {"id": "evt-2", "summary": "Weekly Sync", "start": "2026-03-10T11:00:00-07:00", "end": "2026-03-10T11:30:00-07:00"},
     ]
-
-
-def test_main_refresh_now_bypasses_slot_guard(monkeypatch):
-    module = _load_calendar_poller()
-    captured = {"saved_state": None, "written_events": None, "invalidated": None}
-
-    class FixedDateTime(module.datetime):
-        @classmethod
-        def now(cls, tz=None):
-            return cls(2026, 3, 9, 9, 5, tzinfo=tz)
-
-    monkeypatch.setattr(module, "datetime", FixedDateTime)
-    monkeypatch.setattr(module, "load_state", lambda: {"last_fetch": "2026-03-09-09-00"})
-    monkeypatch.setattr(
-        module,
-        "fetch_events",
-        lambda: ([{"id": "evt-1", "summary": "Sync", "start": "2026-03-09T10:00:00-07:00"}], False),
-    )
-    monkeypatch.setattr(module, "enrich_events", lambda events: events)
-    monkeypatch.setattr(module, "write_to_db", lambda events: captured.__setitem__("written_events", events))
-    monkeypatch.setattr(module, "save_state", lambda state: captured.__setitem__("saved_state", dict(state)))
-    monkeypatch.setattr(
-        module,
-        "invalidate_dashboard_cache",
-        lambda source="calendar": captured.__setitem__("invalidated", source),
-    )
-    monkeypatch.setattr(module.sys, "argv", ["calendar-poller.py", "--refresh-now"])
-
-    module.main()
-
-    assert captured["written_events"] == [
-        {"id": "evt-1", "summary": "Sync", "start": "2026-03-09T10:00:00-07:00"}
-    ]
-    assert captured["saved_state"] == {"last_fetch": "2026-03-09-09-00"}
-    assert captured["invalidated"] == "calendar"

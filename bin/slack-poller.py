@@ -653,7 +653,7 @@ def write_to_inbox_db(item):
     try:
         conn = sqlite3.connect(DB_PATH)
         before = conn.total_changes
-        conn.execute(
+        cursor = conn.execute(
             """INSERT INTO cards
                (source, timestamp, summary, classification, status,
                 proposed_actions, execution_status,
@@ -668,7 +668,9 @@ def write_to_inbox_db(item):
                    section=excluded.section,
                    draft_response=excluded.draft_response,
                    context_notes=excluded.context_notes,
-                   responded=excluded.responded""",
+                   responded=excluded.responded
+               WHERE cards.responded = 0 OR excluded.responded = 1
+               RETURNING id""",
             (
                 item.get("timestamp") or datetime.now(timezone.utc).isoformat(),
                 f"{item.get('sender') or 'Someone'} via {item.get('channel') or 'Slack'}: "
@@ -681,8 +683,24 @@ def write_to_inbox_db(item):
                 1 if item.get("responded") else 0,
             ),
         )
+        row = cursor.fetchone()
+        card_id = row[0] if row else None
         changed = conn.total_changes > before
         conn.commit()
+
+        # If this item was responded to, trigger cross-channel resolution
+        if changed and item.get("responded") and card_id:
+            try:
+                req = urllib.request.Request(
+                    f"http://127.0.0.1:7777/api/cards/{card_id}/resolve-related",
+                    data=b"{}",
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                urllib.request.urlopen(req, timeout=10)
+            except Exception:
+                pass  # non-fatal, dashboard may not be running
+
         conn.close()
         return changed
     except sqlite3.OperationalError as e:

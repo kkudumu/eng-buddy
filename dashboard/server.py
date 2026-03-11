@@ -63,6 +63,14 @@ SUGGESTION_KNOWLEDGE_FILES = (
 _jira_cache = {"data": None, "fetched_at": 0}
 # Source-level stale flags used to emit SSE cache invalidation events.
 _stale_sources = set()
+# Queue for real-time plan execution events pushed to SSE stream.
+import queue as _queue_mod
+_plan_event_queue: _queue_mod.Queue = _queue_mod.Queue()
+
+def _emit_plan_event(event_type: str, data: dict):
+    """Push plan execution events to SSE stream."""
+    _plan_event_queue.put({"event": event_type, "data": json.dumps(data)})
+
 _suggestion_refresh_lock = threading.Lock()
 _suggestion_worker_started = False
 _running_syncs: dict[str, subprocess.Popen] = {}
@@ -1651,7 +1659,10 @@ async def serve_react(path: str = ""):
 @app.get("/")
 async def root():
     from starlette.responses import RedirectResponse
-    return RedirectResponse(url="/app", status_code=302)
+    react_dir = Path(__file__).parent / "static-react"
+    if react_dir.exists():
+        return RedirectResponse(url="/app", status_code=302)
+    return FileResponse(str(STATIC_DIR / "index.html"))
 
 @app.get("/api/health")
 async def health():
@@ -2273,6 +2284,42 @@ async def execute_plan(card_id: int):
     script = f'tell application "Terminal"\n    activate\n    do script "{shlex.quote(wrapper_file)}"\nend tell'
     subprocess.Popen(["osascript", "-e", script])
     return {"status": "dispatched", "steps": step_count, "skipped": skipped}
+
+
+@app.post("/api/cards/{card_id}/plan/steps/{step_index}/complete")
+async def plan_step_complete(card_id: int, step_index: int, body: dict = Body(...)):
+    store = _get_plan_store()
+    plan = store.get(card_id)
+    if not plan:
+        raise HTTPException(404, "No plan")
+    step = plan.get_step(step_index)
+    if not step:
+        raise HTTPException(404, "No step")
+    step.status = body.get("status", "completed")
+    step.output = body.get("output", "")
+    store.save(plan)
+    _emit_plan_event("plan_step_update", {
+        "card_id": card_id,
+        "step_index": step_index,
+        "status": step.status,
+        "output": step.output,
+    })
+    # Check if all non-skipped steps are done
+    all_steps = plan.all_steps()
+    active = [s for s in all_steps if s.status != "skipped"]
+    if all(s.status in ("completed", "failed") for s in active):
+        plan.status = "completed"
+        plan.executed_at = datetime.now(timezone.utc).isoformat()
+        store.save(plan)
+        succeeded = sum(1 for s in active if s.status == "completed")
+        failed = sum(1 for s in active if s.status == "failed")
+        _emit_plan_event("plan_complete", {
+            "card_id": card_id,
+            "status": "completed",
+            "steps_succeeded": succeeded,
+            "steps_failed": failed,
+        })
+    return {"status": "ok"}
 
 
 @app.post("/api/cards/{card_id}/plan/regenerate")
@@ -3872,6 +3919,14 @@ async def card_event_generator():
             _stale_sources.clear()
             for src in sources:
                 yield f"event: cache-invalidate\ndata: {json.dumps({'source': src})}\n\n"
+
+        # Drain plan execution events
+        while not _plan_event_queue.empty():
+            try:
+                evt = _plan_event_queue.get_nowait()
+                yield f"event: {evt['event']}\ndata: {evt['data']}\n\n"
+            except Exception:
+                break
 
         conn = get_db()
         try:

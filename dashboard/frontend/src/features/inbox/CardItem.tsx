@@ -1,12 +1,8 @@
-import { useState, useCallback } from 'react'
 import type { Card } from '../../api/types'
 import { Badge } from '../../components/Badge'
-import { ActionTray } from './ActionTray'
-import { GmailActions } from './GmailActions'
-import { Terminal } from '../terminal/Terminal'
-import { postDecision, performCardAction } from '../../api/client'
+import { Button } from '../../components/Button'
 import { useUIStore } from '../../stores/ui'
-import { useToastStore } from '../../stores/toast'
+import { PlanView } from '../plan/PlanView'
 import styles from './CardItem.module.css'
 
 interface CardItemProps {
@@ -28,36 +24,13 @@ function formatTime(iso: string): string {
 
 export function CardItem({ card, style }: CardItemProps) {
   const sourceClass = styles[card.source] ?? ''
-  const expandedActions = useUIStore((s) => s.expandedActions)
-  const toggleExpandedActions = useUIStore((s) => s.toggleExpandedActions)
-  const addToast = useToastStore((s) => s.addToast)
-  const isExpanded = expandedActions.has(card.id)
-  const [running, setRunning] = useState(false)
-  const [decisionEventId, setDecisionEventId] = useState<number | null>(null)
+  const expandedPlanCards = useUIStore((s) => s.expandedPlanCards)
+  const togglePlanExpanded = useUIStore((s) => s.togglePlanExpanded)
 
-  const handleApprove = async () => {
-    try {
-      const result = await postDecision('cards', card.id, 'approve', 'approved')
-      setDecisionEventId(result.decision_event_id)
-      setRunning(true)
-      await performCardAction(card.id, 'approve', { decision_event_id: result.decision_event_id })
-    } catch {
-      addToast(`Failed to approve card #${card.id}`, 'error')
-    }
-  }
-
-  const handleTerminalClose = useCallback(() => {
-    setRunning(false)
-    setDecisionEventId(null)
-    addToast(`Card #${card.id} execution complete`, 'info')
-  }, [card.id, addToast])
+  const isPlanExpanded = expandedPlanCards.has(card.id)
 
   return (
-    <div
-      className={`${styles.card} ${sourceClass}`}
-      style={style}
-      onClick={() => toggleExpandedActions(card.id)}
-    >
+    <div className={`${styles.card} ${sourceClass}`} style={style}>
       <div className={styles.header}>
         <Badge text={card.source} color={sourceColors[card.source] ?? 'muted'} />
         <span className={styles.summary}>{card.summary}</span>
@@ -69,17 +42,14 @@ export function CardItem({ card, style }: CardItemProps) {
       {card.draft_response && (
         <div className={styles.draft}>{card.draft_response}</div>
       )}
-      {isExpanded && !running && (
-        <div onClick={(e) => e.stopPropagation()}>
-          <ActionTray card={card} onApprove={handleApprove} />
-          {card.source === 'gmail' && <GmailActions card={card} />}
-        </div>
-      )}
-      {running && decisionEventId != null && (
-        <div onClick={(e) => e.stopPropagation()}>
-          <Terminal cardId={card.id} decisionEventId={decisionEventId} onClose={handleTerminalClose} />
-        </div>
-      )}
+      <div className={styles.actions}>
+        <Button
+          label={isPlanExpanded ? 'Hide Plan' : 'View Plan'}
+          onClick={() => togglePlanExpanded(card.id)}
+          variant="ghost"
+        />
+      </div>
+      {isPlanExpanded && <PlanView cardId={card.id} />}
     </div>
   )
 }

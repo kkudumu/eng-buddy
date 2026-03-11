@@ -3,15 +3,11 @@ set -euo pipefail
 
 RUNTIME_DIR="$HOME/.claude/eng-buddy"
 DASHBOARD_DIR="$RUNTIME_DIR/dashboard"
-RUNTIME_BIN_DIR="$RUNTIME_DIR/bin"
-RUNTIME_STATUS_DIR="$RUNTIME_DIR/.runtime"
 LAUNCH_AGENTS_DIR="$HOME/Library/LaunchAgents"
 LAUNCH_LABEL="com.engbuddy.dashboard"
 PLIST_PATH="$LAUNCH_AGENTS_DIR/$LAUNCH_LABEL.plist"
 LOG_FILE="$RUNTIME_DIR/dashboard.log"
-APP_URL="http://127.0.0.1:7777"
 HEALTH_URL="http://127.0.0.1:7777/api/health"
-RESTART_STATUS_FILE="$RUNTIME_STATUS_DIR/dashboard-restart-status.json"
 
 combined_path() {
   local claude_dir
@@ -21,26 +17,6 @@ combined_path() {
 
 launch_target() {
   echo "gui/$(id -u)/$LAUNCH_LABEL"
-}
-
-write_restart_status() {
-  local phase="${1:-idle}"
-  local message="${2:-}"
-  mkdir -p "$RUNTIME_STATUS_DIR"
-  python3 - "$RESTART_STATUS_FILE" "$phase" "$message" <<'PY'
-import json
-import sys
-from datetime import datetime, timezone
-from pathlib import Path
-
-path = Path(sys.argv[1])
-payload = {
-    "phase": sys.argv[2],
-    "message": sys.argv[3],
-    "updated_at": datetime.now(timezone.utc).isoformat(),
-}
-path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-PY
 }
 
 cleanup_runtime() {
@@ -193,45 +169,6 @@ wait_for_health() {
   return 1
 }
 
-refresh_data_now() {
-  local poller_scripts=(
-    "slack-poller.py"
-    "gmail-poller.py"
-    "calendar-poller.py"
-    "jira-poller.py"
-  )
-  local script log_path
-
-  if [[ ! -d "$RUNTIME_BIN_DIR" ]]; then
-    echo "Poller runtime dir not found: $RUNTIME_BIN_DIR" >&2
-    return 1
-  fi
-
-  for script in "${poller_scripts[@]}"; do
-    if [[ ! -f "$RUNTIME_BIN_DIR/$script" ]]; then
-      echo "Missing poller script: $RUNTIME_BIN_DIR/$script" >&2
-      return 1
-    fi
-  done
-
-  for script in "${poller_scripts[@]}"; do
-    log_path="$RUNTIME_DIR/${script%.py}.log"
-    echo "Refreshing $script..." >> "$LOG_FILE"
-    if ! PATH="$(combined_path)" python3 "$RUNTIME_BIN_DIR/$script" --refresh-now >> "$log_path" 2>&1; then
-      echo "Poller refresh failed: $script" >&2
-      return 1
-    fi
-  done
-
-  return 0
-}
-
-open_dashboard() {
-  if command -v open >/dev/null 2>&1; then
-    open "$APP_URL" >/dev/null 2>&1 || true
-  fi
-}
-
 start_agent_impl() {
   local timeout_seconds="${1:-45}"
   local pending_status="${2:-TIMEOUT}"
@@ -316,58 +253,6 @@ restart_agent() {
   return 1
 }
 
-restart_fresh_agent() {
-  write_restart_status "restarting" "Restarting dashboard server"
-  if ! restart_agent; then
-    write_restart_status "failed" "Dashboard restart timed out"
-    return 1
-  fi
-
-  write_restart_status "refreshing_data" "Refreshing dashboard data sources"
-  if ! refresh_data_now; then
-    write_restart_status "failed" "Dashboard restarted but fresh-data sync failed"
-    return 1
-  fi
-
-  write_restart_status "complete" "Dashboard restarted with fresh data"
-  echo "STARTED_FRESH"
-}
-
-ensure_open() {
-  local startup_status restart_status
-
-  startup_status="$(start_agent_background 2>/dev/null || true)"
-
-  case "$startup_status" in
-    ALREADY_RUNNING)
-      ;;
-    STARTED|STARTING)
-      if ! wait_for_health 20; then
-        restart_status="$(restart_agent 2>/dev/null || true)"
-        if [[ "$restart_status" != "STARTED" ]]; then
-          echo "TIMEOUT"
-          return 1
-        fi
-      fi
-      ;;
-    *)
-      restart_status="$(restart_agent 2>/dev/null || true)"
-      if [[ "$restart_status" != "STARTED" ]]; then
-        echo "TIMEOUT"
-        return 1
-      fi
-      ;;
-  esac
-
-  if ! is_healthy; then
-    echo "TIMEOUT"
-    return 1
-  fi
-
-  open_dashboard
-  echo "READY"
-}
-
 stop_agent() {
   bootout_agent
   stop_legacy_dashboard_process
@@ -391,26 +276,34 @@ print_status() {
   return 1
 }
 
+sync_from_skills_repo() {
+  local skills_dashboard="$HOME/.claude/skills/eng-buddy/dashboard"
+  # Sync server.py if skills repo version is newer
+  if [[ -f "$skills_dashboard/server.py" ]]; then
+    cp "$skills_dashboard/server.py" "$DASHBOARD_DIR/server.py"
+  fi
+  # Sync React build if it exists in skills repo
+  if [[ -d "$skills_dashboard/static-react" ]]; then
+    rm -rf "$DASHBOARD_DIR/static-react"
+    cp -r "$skills_dashboard/static-react" "$DASHBOARD_DIR/static-react"
+  fi
+}
+
 serve_foreground() {
   export_runtime_env
   cleanup_runtime
+  sync_from_skills_repo
   ensure_python_env
   cd "$DASHBOARD_DIR"
   exec python3 server.py
 }
 
 case "${1:-}" in
-  --ensure-open)
-    ensure_open
-    ;;
   --background)
     start_agent_background
     ;;
   --restart)
     restart_agent
-    ;;
-  --restart-fresh)
-    restart_fresh_agent
     ;;
   --stop)
     stop_agent

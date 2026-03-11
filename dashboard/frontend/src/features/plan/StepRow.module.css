@@ -1,0 +1,88 @@
+.stepRow {
+  padding: 12px 16px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(240, 230, 255, 0.08);
+  transition: background 0.2s, border-color 0.2s;
+}
+
+.stepRow:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.stepRow.done {
+  opacity: 0.5;
+}
+
+.stepHeader {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.stepIndex {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: rgba(180, 150, 255, 0.15);
+  color: var(--accent-purple, #b496ff);
+  font-size: 0.7rem;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+}
+
+.stepSummary {
+  flex: 1;
+  font-size: 0.88rem;
+  font-weight: 500;
+}
+
+.statusChip {
+  font-size: 0.7rem;
+  font-family: var(--font-mono);
+  padding: 2px 8px;
+  border-radius: 20px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.pending { background: rgba(240, 230, 255, 0.1); color: var(--text-muted); }
+.approved { background: rgba(144, 227, 178, 0.15); color: #90e3b2; }
+.edited { background: rgba(154, 196, 255, 0.15); color: #9ac4ff; }
+.skipped { background: rgba(180, 170, 200, 0.1); color: var(--text-muted); }
+.completed { background: rgba(144, 227, 178, 0.2); color: #90e3b2; }
+.failed { background: rgba(255, 155, 135, 0.15); color: #ff9b87; }
+
+.stepDetail {
+  margin-top: 8px;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.draftContent {
+  margin-top: 8px;
+  padding: 8px 12px;
+  background: rgba(144, 227, 178, 0.06);
+  border: 1px solid rgba(144, 227, 178, 0.2);
+  border-radius: 8px;
+  font-size: 0.8rem;
+  font-family: var(--font-mono);
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.5;
+  overflow: auto;
+  max-height: 180px;
+}
+
+.stepActions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}

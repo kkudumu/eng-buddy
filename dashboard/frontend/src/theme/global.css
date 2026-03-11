@@ -1,5 +1,4 @@
 @import url('https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
-@import './themes.css';
 @import './tokens.css';
 @import './animations.css';
 
@@ -10,10 +9,10 @@
 }
 
 body {
-  font-family: var(--font, var(--font-body));
+  font-family: var(--font-body);
   font-weight: 400;
-  background-color: var(--bg, var(--bg-deep));
-  color: var(--text, var(--text-primary));
+  background: var(--bg-deep);
+  color: var(--text-primary);
   min-height: 100vh;
   overflow-x: hidden;
 }

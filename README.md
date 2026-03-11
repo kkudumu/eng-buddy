@@ -6,7 +6,7 @@ A Claude Code skill + local web dashboard that turns your `~/.claude/` directory
 
 ## What You Get
 
-- **Dashboard** at `127.0.0.1:7777` — neo-brutalist dark-mode queue UI
+- **Dashboard** at `localhost:7777` — neo-brutalist dark-mode queue UI
 - **Background pollers** — Gmail, Slack, Jira, Freshservice feed cards into a local SQLite queue
 - **One-click execution** — approve a card and watch Claude execute it in a streaming terminal
 - **Refine before acting** — chat with Claude about a card before approving
@@ -17,28 +17,20 @@ A Claude Code skill + local web dashboard that turns your `~/.claude/` directory
 ## Quick Start
 
 ```bash
-# 1. Clone the repo anywhere convenient
-git clone https://github.com/kkudumu/eng-buddy.git ~/src/eng-buddy
+# 1. Clone the repo (if you haven't already)
+git clone https://github.com/kkudumu/clod.git ~/.claude
 
-# 2. Run the one-shot installer
-bash ~/src/eng-buddy/bin/install-eng-buddy.sh
+# 2. Start the dashboard
+cd ~/.claude/eng-buddy/dashboard
+./start.sh
+# Opens at http://localhost:7777
 
 # 3. Invoke the skill
 # In Claude Code:
 /eng-buddy
 ```
 
-The installer is idempotent. It syncs hooks into `~/.claude`, mirrors the dashboard into `~/.claude/eng-buddy/dashboard`, installs/reloads the Gmail/Slack/Calendar/Jira LaunchAgents, seeds `~/.claude/eng-buddy/bin` with the runtime poller scripts, and starts the dashboard via launchd.
-
-It handles the local machine setup for eng-buddy. You still need to provide your own external credentials and integrations, such as Gmail OAuth files, Slack tokens, and Atlassian/Freshservice MCP configuration.
-
-If you want the installer to wait for dashboard health and open the browser immediately, run:
-
-```bash
-ENG_BUDDY_OPEN_DASHBOARD=1 bash ~/src/eng-buddy/bin/install-eng-buddy.sh
-```
-
-The dashboard runtime auto-creates a Python venv and installs dependencies on first run.
+The dashboard auto-creates a Python venv and installs dependencies on first run.
 
 ## Architecture
 

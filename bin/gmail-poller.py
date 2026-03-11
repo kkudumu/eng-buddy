@@ -9,6 +9,7 @@ Injects brain context and parses learning from Claude responses.
 """
 
 import json
+import os
 import re
 import sqlite3
 import sys
@@ -35,6 +36,7 @@ SETTINGS_FILE = BASE_DIR / "dashboard-settings.json"
 TOKEN_URL  = "https://oauth2.googleapis.com/token"
 GMAIL_BASE = "https://gmail.googleapis.com/gmail/v1/users/me"
 DASHBOARD_INVALIDATE_URL = "http://127.0.0.1:7777/api/cache-invalidate"
+USER_EMAIL = os.environ.get("ENG_BUDDY_USER_EMAIL", "kioja.kudumu@klaviyo.com")
 
 # How many noise hits before we surface a filter suggestion
 FILTER_SUGGEST_THRESHOLD = 10
@@ -341,6 +343,119 @@ def update_filter_suggestions(conn, noise_items):
 
 
 # ---------------------------------------------------------------------------
+# Response sweep — detect user replies in threads
+# ---------------------------------------------------------------------------
+
+def sweep_responded_cards(token):
+    """
+    Check unresolved Gmail cards for user replies in the thread.
+    If the user has replied, mark the card as responded.
+    """
+    conn = db_connect()
+    if conn is None:
+        return 0, []
+
+    try:
+        rows = conn.execute(
+            """SELECT id, summary, proposed_actions, timestamp
+               FROM cards
+               WHERE source = 'gmail'
+                 AND responded = 0
+                 AND section IN ('action-needed', 'needs-action', 'needs-response')
+                 AND status = 'pending'""",
+        ).fetchall()
+    except sqlite3.OperationalError:
+        conn.close()
+        return 0, []
+
+    if not rows:
+        conn.close()
+        return 0, []
+
+    resolved_count = 0
+    resolved_ids = []
+
+    for row in rows:
+        card_id = row[0]
+        proposed_actions_raw = row[2] or "[]"
+        card_timestamp = row[3] or ""
+
+        try:
+            actions = json.loads(proposed_actions_raw)
+        except (json.JSONDecodeError, TypeError):
+            actions = []
+
+        thread_id = ""
+        for action in actions:
+            thread_id = action.get("thread_id", "")
+            if thread_id:
+                break
+
+        if not thread_id:
+            continue
+
+        # Fetch thread messages from Gmail API
+        try:
+            thread_data = gmail_get(
+                f"threads/{thread_id}",
+                {"format": "metadata", "metadataHeaders": ["From"]},
+                token=token,
+            )
+        except Exception as exc:
+            print(f"[{datetime.now().strftime('%H:%M')}] Thread fetch failed for {thread_id}: {exc}")
+            continue
+
+        thread_messages = thread_data.get("messages", [])
+
+        # Check if any message in the thread is from the user (sent after card timestamp)
+        user_replied = False
+        for msg in thread_messages:
+            msg_from = ""
+            for h in msg.get("payload", {}).get("headers", []):
+                if h["name"].lower() == "from":
+                    msg_from = h["value"]
+                    break
+
+            _, from_email = parseaddr(msg_from)
+            if not from_email:
+                continue
+
+            # Check if this is from the user's own email
+            if from_email.lower() == USER_EMAIL.lower():
+                # Verify it was sent after the card was created
+                msg_internal = msg.get("internalDate", "0")
+                msg_ts = int(msg_internal) / 1000 if msg_internal else 0
+
+                try:
+                    card_dt = datetime.fromisoformat(card_timestamp.replace("Z", "+00:00"))
+                    card_ts = card_dt.timestamp()
+                except (ValueError, TypeError):
+                    card_ts = 0
+
+                if msg_ts > card_ts:
+                    user_replied = True
+                    break
+
+        if user_replied:
+            conn.execute(
+                """UPDATE cards
+                   SET responded = 1, section = 'no-action', classification = 'responded'
+                   WHERE id = ?""",
+                (card_id,),
+            )
+            resolved_count += 1
+            resolved_ids.append(card_id)
+
+        time.sleep(0.15)  # rate limiting
+
+    if resolved_count:
+        conn.commit()
+    conn.close()
+
+    return resolved_count, resolved_ids
+
+
+# ---------------------------------------------------------------------------
 # Claude CLI classification
 # ---------------------------------------------------------------------------
 
@@ -587,6 +702,25 @@ def main():
 
     if db_changed:
         invalidate_dashboard_cache("gmail")
+
+    # Response sweep: check if user replied to any pending Gmail cards
+    token_for_sweep = get_token()
+    sweep_count, sweep_ids = sweep_responded_cards(token_for_sweep)
+    if sweep_count:
+        print(f"[{datetime.now().strftime('%H:%M')}] Response sweep: resolved {sweep_count} card(s)")
+        invalidate_dashboard_cache("gmail")
+        # Trigger cross-channel resolution for each resolved card
+        for cid in sweep_ids:
+            try:
+                req = urllib.request.Request(
+                    f"http://127.0.0.1:7777/api/cards/{cid}/resolve-related",
+                    data=b"{}",
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                urllib.request.urlopen(req, timeout=10)
+            except Exception as exc:
+                print(f"[{datetime.now().strftime('%H:%M')}] Cross-channel resolve failed for card {cid}: {exc}")
 
 
 if __name__ == "__main__":
