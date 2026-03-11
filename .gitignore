@@ -40,7 +40,7 @@ references/
 .session-active
 
 # Task state (user-specific task tracking)
-tasks/
+/tasks/
 
 # macOS
 .DS_Store
@@ -95,7 +95,7 @@ __pycache__/
 # Personal data directories
 analysis/
 drafts/
-docs/
+docs/*
 !docs/plans/
 health/
 metrics/
