@@ -10,12 +10,6 @@ import { KnowledgeView } from './features/knowledge/KnowledgeView'
 import { SuggestionsView } from './features/suggestions/SuggestionsView'
 import { PlaybooksView } from './features/playbooks/PlaybooksView'
 
-const PlaceholderView = ({ name }: { name: string }) => (
-  <div style={{ padding: '2rem', color: 'var(--text)', fontFamily: 'var(--font)' }}>
-    {name} view — coming soon
-  </div>
-)
-
 export const router = createBrowserRouter(
   [
     {
