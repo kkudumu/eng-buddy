@@ -1,0 +1,208 @@
+/* ═══════════════════════════════════════════════════════
+   eng-buddy Theme System — 6 variable sets
+   Attribute selectors: [data-theme="X"][data-mode="Y"]
+   ═══════════════════════════════════════════════════════ */
+
+/* ── Neon Dreams (Dark) ─────────────────────────────── */
+[data-theme="neon-dreams"][data-mode="dark"] {
+  --bg: #0d0221;
+  --card-bg: #150535;
+  --surface: #120430;
+  --surface-alt: #1a0840;
+  --border: #ff71ce;
+  --border-subtle: #44206b;
+  --border-faint: #26104d;
+  --text: #f1e8ff;
+  --muted: #9d8bbb;
+  --hover-bg: rgba(255, 113, 206, 0.12);
+  --overlay-bg: rgba(13, 2, 33, 0.92);
+  --shadow: 0 0 14px rgba(255, 113, 206, 0.32), 0 0 34px rgba(1, 205, 254, 0.1);
+  --shadow-sm: 0 0 10px rgba(255, 113, 206, 0.24);
+  --shadow-hover: 0 0 20px rgba(255, 113, 206, 0.45), 0 0 44px rgba(1, 205, 254, 0.16);
+  --font: 'JetBrains Mono', monospace;
+  --font-heading: 'VT323', monospace;
+  --radius: 0;
+  --radius-sm: 0;
+  --transition-speed: 0.15s;
+  --fresh: #05ffa1;
+  --jira: #01cdfe;
+  --slack: #ff71ce;
+  --gmail: #ff6b6b;
+  --urgent: #ffffff;
+  --needs-response: #fffb96;
+  --debug-info: #01cdfe;
+  --debug-error: #ff6b6b;
+  --debug-surface: rgba(13, 2, 33, 0.97);
+  --error-row-bg: rgba(255, 107, 107, 0.12);
+  --held-stripe: repeating-linear-gradient(45deg, #24114b, #24114b 4px, #150535 4px, #150535 8px);
+}
+
+/* ── Neon Dreams (Light) ────────────────────────────── */
+[data-theme="neon-dreams"][data-mode="light"] {
+  --bg: #e8d5f5;
+  --card-bg: rgba(255, 255, 255, 0.72);
+  --surface: rgba(255, 255, 255, 0.62);
+  --surface-alt: rgba(255, 255, 255, 0.52);
+  --border: #ec6dcb;
+  --border-subtle: #caa6dc;
+  --border-faint: #d7b7e6;
+  --text: #33114e;
+  --muted: #815f9f;
+  --hover-bg: rgba(236, 109, 203, 0.12);
+  --overlay-bg: rgba(232, 213, 245, 0.88);
+  --shadow: 0 8px 24px rgba(129, 95, 159, 0.18);
+  --shadow-sm: 0 6px 16px rgba(129, 95, 159, 0.14);
+  --shadow-hover: 0 12px 32px rgba(79, 143, 230, 0.2);
+  --font: 'JetBrains Mono', monospace;
+  --font-heading: 'VT323', monospace;
+  --radius: 0;
+  --radius-sm: 0;
+  --transition-speed: 0.15s;
+  --fresh: #18c58b;
+  --jira: #3aa1ff;
+  --slack: #ec6dcb;
+  --gmail: #ff7c7c;
+  --urgent: #33114e;
+  --needs-response: #d1b72f;
+  --debug-info: #3aa1ff;
+  --debug-error: #ff7c7c;
+  --debug-surface: rgba(255, 255, 255, 0.92);
+  --error-row-bg: rgba(255, 124, 124, 0.1);
+  --held-stripe: repeating-linear-gradient(45deg, rgba(236, 109, 203, 0.12), rgba(236, 109, 203, 0.12) 4px, rgba(255, 255, 255, 0.58) 4px, rgba(255, 255, 255, 0.58) 8px);
+}
+
+/* ── Midnight Ops (Dark) ────────────────────────────── */
+[data-theme="midnight-ops"][data-mode="dark"] {
+  --bg: #0f0f0f;
+  --card-bg: #1a1a1a;
+  --surface: #111111;
+  --surface-alt: #151515;
+  --border: #ffffff;
+  --border-subtle: #444444;
+  --border-faint: #222222;
+  --text: #ffffff;
+  --muted: #888888;
+  --hover-bg: #222222;
+  --overlay-bg: rgba(0, 0, 0, 0.85);
+  --shadow: 4px 4px 0 #ffffff;
+  --shadow-sm: 2px 2px 0 #ffffff;
+  --shadow-hover: 6px 6px 0 #ffffff;
+  --font: 'JetBrains Mono', monospace;
+  --font-heading: 'JetBrains Mono', monospace;
+  --radius: 0;
+  --radius-sm: 0;
+  --transition-speed: 0.1s;
+  --fresh: #00ff88;
+  --jira: #4c9aff;
+  --slack: #e01e5a;
+  --gmail: #ea4335;
+  --urgent: #ffffff;
+  --needs-response: #f5f500;
+  --debug-info: #4c9aff;
+  --debug-error: #ff7b72;
+  --debug-surface: rgba(10, 10, 10, 0.97);
+  --error-row-bg: rgba(234, 67, 53, 0.08);
+  --held-stripe: repeating-linear-gradient(45deg, #333333, #333333 4px, #1a1a1a 4px, #1a1a1a 8px);
+}
+
+/* ── Midnight Ops (Light) ───────────────────────────── */
+[data-theme="midnight-ops"][data-mode="light"] {
+  --bg: #f5f0eb;
+  --card-bg: #ffffff;
+  --surface: #f0ebe5;
+  --surface-alt: #e8e3dd;
+  --border: #000000;
+  --border-subtle: #bdb4aa;
+  --border-faint: #d9d1c8;
+  --text: #000000;
+  --muted: #655d56;
+  --hover-bg: #ece4db;
+  --overlay-bg: rgba(245, 240, 235, 0.92);
+  --shadow: 4px 4px 0 #000000;
+  --shadow-sm: 2px 2px 0 #000000;
+  --shadow-hover: 6px 6px 0 #000000;
+  --font: 'JetBrains Mono', monospace;
+  --font-heading: 'JetBrains Mono', monospace;
+  --radius: 0;
+  --radius-sm: 0;
+  --transition-speed: 0.1s;
+  --fresh: #00894a;
+  --jira: #0f62c9;
+  --slack: #c7134c;
+  --gmail: #c53f32;
+  --urgent: #000000;
+  --needs-response: #b39500;
+  --debug-info: #0f62c9;
+  --debug-error: #c53f32;
+  --debug-surface: rgba(255, 255, 255, 0.97);
+  --error-row-bg: rgba(197, 63, 50, 0.1);
+  --held-stripe: repeating-linear-gradient(45deg, #ddd2c8, #ddd2c8 4px, #ffffff 4px, #ffffff 8px);
+}
+
+/* ── Soft Kitty (Dark) ──────────────────────────────── */
+[data-theme="soft-kitty"][data-mode="dark"] {
+  --bg: #1a1528;
+  --card-bg: #241e35;
+  --surface: #1f1830;
+  --surface-alt: #2a2240;
+  --border: #f4a8c8;
+  --border-subtle: #554170;
+  --border-faint: #382b4f;
+  --text: #f7eef9;
+  --muted: #b5a0cd;
+  --hover-bg: #31254a;
+  --overlay-bg: rgba(26, 21, 40, 0.9);
+  --shadow: 0 12px 28px rgba(244, 168, 200, 0.18);
+  --shadow-sm: 0 8px 18px rgba(244, 168, 200, 0.14);
+  --shadow-hover: 0 18px 32px rgba(244, 168, 200, 0.24);
+  --font: 'Comfortaa', sans-serif;
+  --font-heading: 'Patrick Hand', cursive;
+  --radius: 18px;
+  --radius-sm: 12px;
+  --transition-speed: 0.18s;
+  --fresh: #90e3b2;
+  --jira: #9ac4ff;
+  --slack: #ff8ab2;
+  --gmail: #ff9b87;
+  --urgent: #f7eef9;
+  --needs-response: #ffe38b;
+  --debug-info: #9ac4ff;
+  --debug-error: #ff9b87;
+  --debug-surface: rgba(29, 23, 44, 0.97);
+  --error-row-bg: rgba(255, 155, 135, 0.12);
+  --held-stripe: repeating-linear-gradient(45deg, #332747, #332747 4px, #241e35 4px, #241e35 8px);
+}
+
+/* ── Soft Kitty (Light) ─────────────────────────────── */
+[data-theme="soft-kitty"][data-mode="light"] {
+  --bg: #fff5f0;
+  --card-bg: #ffffff;
+  --surface: #fff0ea;
+  --surface-alt: #ffe7df;
+  --border: #f28aa8;
+  --border-subtle: #edbfd0;
+  --border-faint: #f6d7e1;
+  --text: #40263e;
+  --muted: #9f7890;
+  --hover-bg: #ffe9ee;
+  --overlay-bg: rgba(255, 245, 240, 0.94);
+  --shadow: 0 12px 28px rgba(242, 138, 168, 0.16);
+  --shadow-sm: 0 8px 18px rgba(242, 138, 168, 0.12);
+  --shadow-hover: 0 18px 32px rgba(242, 138, 168, 0.22);
+  --font: 'Comfortaa', sans-serif;
+  --font-heading: 'Patrick Hand', cursive;
+  --radius: 18px;
+  --radius-sm: 12px;
+  --transition-speed: 0.18s;
+  --fresh: #3fb57b;
+  --jira: #4f8fe6;
+  --slack: #e65c89;
+  --gmail: #e56b5d;
+  --urgent: #40263e;
+  --needs-response: #d7a92b;
+  --debug-info: #4f8fe6;
+  --debug-error: #e56b5d;
+  --debug-surface: rgba(255, 255, 255, 0.97);
+  --error-row-bg: rgba(229, 107, 93, 0.1);
+  --held-stripe: repeating-linear-gradient(45deg, #fde0e8, #fde0e8 4px, #ffffff 4px, #ffffff 8px);
+}
