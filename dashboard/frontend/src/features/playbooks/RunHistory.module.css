@@ -1,0 +1,24 @@
+.container { margin-top: 0.5rem; }
+.loading, .empty { color: var(--muted); font-family: var(--font-mono); font-size: 0.75rem; padding: 1rem; }
+
+.run { border: 1px solid var(--border-faint); border-radius: var(--radius-sm, 4px); margin-bottom: 0.5rem; overflow: hidden; }
+
+.runHeader {
+  width: 100%; display: flex; align-items: center; gap: 0.75rem; padding: 0.5rem 0.75rem;
+  background: var(--card-bg); border: none; color: var(--text); cursor: pointer;
+  font-family: var(--font-mono); font-size: 0.75rem; text-align: left;
+}
+.runHeader:hover { background: var(--hover-bg); }
+.date { color: var(--muted); font-size: 0.7rem; }
+.stepCount { color: var(--muted); font-size: 0.65rem; margin-left: auto; }
+.chevron { color: var(--muted); font-size: 0.6rem; }
+
+.steps { padding: 0.5rem 0.75rem; background: var(--surface); }
+.step {
+  display: flex; align-items: center; gap: 0.5rem; padding: 0.25rem 0;
+  font-family: var(--font-mono); font-size: 0.7rem;
+}
+.stepNum { color: var(--muted); min-width: 20px; }
+.stepDesc { color: var(--text); flex: 1; }
+.stepTool { color: var(--jira); font-size: 0.6rem; }
+.duration { color: var(--muted); font-size: 0.6rem; }
