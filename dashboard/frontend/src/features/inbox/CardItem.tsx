@@ -2,6 +2,7 @@ import { useState, useCallback } from 'react'
 import type { Card } from '../../api/types'
 import { Badge } from '../../components/Badge'
 import { ActionTray } from './ActionTray'
+import { GmailActions } from './GmailActions'
 import { Terminal } from '../terminal/Terminal'
 import { postDecision, performCardAction } from '../../api/client'
 import { useUIStore } from '../../stores/ui'
@@ -71,6 +72,7 @@ export function CardItem({ card, style }: CardItemProps) {
       {isExpanded && !running && (
         <div onClick={(e) => e.stopPropagation()}>
           <ActionTray card={card} onApprove={handleApprove} />
+          {card.source === 'gmail' && <GmailActions card={card} />}
         </div>
       )}
       {running && decisionEventId != null && (
