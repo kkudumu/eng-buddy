@@ -1,11 +1,13 @@
 import { Outlet } from 'react-router-dom'
-import { useCallback } from 'react'
+import { useCallback, useEffect } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { useSSE } from '../hooks/useSSE'
 import type { SSEEvent } from '../hooks/useSSE'
+import { useDebugStore } from '../stores/debug'
 import { Header } from '../features/inbox/Header'
 import { Sidebar } from '../features/inbox/Sidebar'
 import { ToastContainer } from '../components/ToastContainer'
+import { DebugDrawer } from '../features/debug/DebugDrawer'
 import styles from './AppLayout.module.css'
 
 const particles = ['\u273f', '\u22c6', '\u2661', '\u2727', '\u273f', '\u22c6', '\u2661', '\u2727']
@@ -21,6 +23,22 @@ export function AppLayout() {
   )
 
   useSSE(handleSSE)
+
+  useEffect(() => {
+    const addEntry = useDebugStore.getState().addEntry
+    const handleError = (event: ErrorEvent) => {
+      addEntry('error', event.message, { filename: event.filename, lineno: event.lineno })
+    }
+    const handleRejection = (event: PromiseRejectionEvent) => {
+      addEntry('error', `Unhandled rejection: ${event.reason}`)
+    }
+    window.addEventListener('error', handleError)
+    window.addEventListener('unhandledrejection', handleRejection)
+    return () => {
+      window.removeEventListener('error', handleError)
+      window.removeEventListener('unhandledrejection', handleRejection)
+    }
+  }, [])
 
   return (
     <div className={styles.layout}>
@@ -50,6 +68,7 @@ export function AppLayout() {
         </div>
       </div>
 
+      <DebugDrawer />
       <ToastContainer />
     </div>
   )

@@ -1,0 +1,43 @@
+.toggle {
+  position: fixed; bottom: 1rem; left: 1rem; z-index: 9999;
+  font-family: var(--font-mono); font-size: 0.7rem;
+  padding: 4px 10px; border: 1px solid var(--border-subtle);
+  background: var(--debug-surface, var(--surface)); color: var(--debug-info, var(--jira));
+  border-radius: var(--radius-sm, 4px); cursor: pointer;
+}
+.drawer {
+  position: fixed; bottom: 2.5rem; left: 1rem; z-index: 9998;
+  width: 500px; max-height: 400px;
+  background: var(--debug-surface, var(--surface));
+  border: 1px solid var(--border-subtle); border-radius: var(--radius-sm, 4px);
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.header {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--border-faint);
+  font-family: var(--font-mono); font-size: 0.75rem; color: var(--text);
+}
+.header button {
+  font-family: var(--font-mono); font-size: 0.65rem;
+  padding: 2px 8px; border: 1px solid var(--border-subtle);
+  background: transparent; color: var(--muted); cursor: pointer;
+}
+.entries { overflow-y: auto; padding: 0.5rem; }
+.entry {
+  display: flex; gap: 0.5rem; align-items: center;
+  font-family: var(--font-mono); font-size: 0.7rem;
+  padding: 0.25rem 0; border-bottom: 1px solid var(--border-faint);
+  color: var(--text);
+}
+.badge { font-weight: bold; font-size: 0.6rem; min-width: 40px; }
+.info .badge { color: var(--debug-info); }
+.warn .badge { color: var(--needs-response); }
+.error .badge { color: var(--debug-error); }
+.message { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.time { color: var(--muted); font-size: 0.6rem; }
+.sendBtn {
+  font-size: 0.6rem; padding: 1px 6px;
+  border: 1px solid var(--debug-error); background: transparent;
+  color: var(--debug-error); cursor: pointer; border-radius: 3px;
+}
+.sent { color: var(--fresh); font-size: 0.6rem; }
