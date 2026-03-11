@@ -2,6 +2,7 @@ import { createBrowserRouter, Navigate } from 'react-router-dom'
 import { AppLayout } from './layouts/AppLayout'
 import App from './App'
 import { TasksView } from './features/tasks/TasksView'
+import { JiraSprintView } from './features/jira/JiraSprintView'
 
 const PlaceholderView = ({ name }: { name: string }) => (
   <div style={{ padding: '2rem', color: 'var(--text)', fontFamily: 'var(--font)' }}>
@@ -19,7 +20,7 @@ export const router = createBrowserRouter(
         { path: 'inbox', element: <App /> },
         { path: 'inbox/:source', element: <App /> },
         { path: 'tasks', element: <TasksView /> },
-        { path: 'jira', element: <PlaceholderView name="Jira Sprint" /> },
+        { path: 'jira', element: <JiraSprintView /> },
         { path: 'calendar', element: <PlaceholderView name="Calendar" /> },
         { path: 'daily', element: <PlaceholderView name="Daily Log" /> },
         { path: 'learnings', element: <PlaceholderView name="Learnings" /> },
