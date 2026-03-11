@@ -1,42 +1,29 @@
-import { useUIStore } from '../../stores/ui'
-import type { CardCounts, CardSource } from '../../api/types'
+import { NavLink } from 'react-router-dom'
 import styles from './Sidebar.module.css'
 
-interface SidebarProps {
-  counts: CardCounts
-  sourceCounts: Record<string, number>
-}
-
-const sources: { key: CardSource; label: string }[] = [
-  { key: 'all', label: 'All' },
-  { key: 'gmail', label: 'Gmail' },
-  { key: 'slack', label: 'Slack' },
-  { key: 'jira', label: 'Jira' },
-  { key: 'freshservice', label: 'Freshservice' },
-  { key: 'calendar', label: 'Calendar' },
-  { key: 'tasks', label: 'Tasks' },
+const navItems = [
+  { to: '/app/inbox', label: 'Inbox' },
+  { to: '/app/tasks', label: 'Tasks' },
+  { to: '/app/jira', label: 'Jira' },
+  { to: '/app/calendar', label: 'Calendar' },
+  { to: '/app/daily', label: 'Daily' },
+  { to: '/app/learnings', label: 'Learnings' },
+  { to: '/app/knowledge', label: 'Knowledge' },
+  { to: '/app/suggestions', label: 'Suggestions' },
+  { to: '/app/playbooks', label: 'Playbooks' },
 ]
 
-export function Sidebar({ counts, sourceCounts }: SidebarProps) {
-  const activeSource = useUIStore((s) => s.activeSource)
-  const setActiveSource = useUIStore((s) => s.setActiveSource)
-
-  const getCount = (key: CardSource): number => {
-    if (key === 'all') return counts.pending
-    return sourceCounts[key] ?? 0
-  }
-
+export function Sidebar() {
   return (
     <nav className={styles.sidebar}>
-      {sources.map(({ key, label }) => (
-        <button
-          key={key}
-          className={`${styles.item} ${activeSource === key ? styles.active : ''}`}
-          onClick={() => setActiveSource(key)}
+      {navItems.map(({ to, label }) => (
+        <NavLink
+          key={to}
+          to={to}
+          className={({ isActive }) => `${styles.item} ${isActive ? styles.active : ''}`}
         >
           <span>{label}</span>
-          {getCount(key) > 0 && <span className={styles.count}>{getCount(key)}</span>}
-        </button>
+        </NavLink>
       ))}
     </nav>
   )
