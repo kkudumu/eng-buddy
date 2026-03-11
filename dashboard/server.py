@@ -19,7 +19,12 @@ import uvicorn
 from fastapi import Body, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 from migrate import migrate
+
+# Add parent dir so bin/ imports are available when running from dashboard/
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from bin.browser.patchright_client import PatchrightClient
 
 DB_PATH = Path.home() / ".claude" / "eng-buddy" / "inbox.db"
 ENG_BUDDY_DIR = Path.home() / ".claude" / "eng-buddy"
@@ -58,6 +63,15 @@ SUGGESTION_KNOWLEDGE_FILES = (
     PATTERNS_DIR / "recurring-questions.md",
     PATTERNS_DIR / "task-execution.md",
 )
+
+# Browser automation singleton
+_browser_client = PatchrightClient()
+
+
+class BrowserExecuteRequest(BaseModel):
+    action: str
+    params: dict = {}
+
 
 # In-memory cache for Jira sprint data
 _jira_cache = {"data": None, "fetched_at": 0}
@@ -5023,6 +5037,75 @@ def _record_stat(metric, value=1, details=None):
         conn.commit()
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Browser automation endpoints (/api/browser/*)
+# ---------------------------------------------------------------------------
+
+@app.post("/api/browser/start")
+async def browser_start():
+    """Initialize the Patchright browser session (no-op if already running)."""
+    result = await _browser_client.start()
+    return result
+
+
+@app.post("/api/browser/execute")
+async def browser_execute(req: BrowserExecuteRequest):
+    """Execute a browser action against the live session."""
+    action = req.action
+    params = req.params
+    try:
+        if action == "navigate":
+            if "url" not in params:
+                raise HTTPException(status_code=400, detail="params.url is required for navigate")
+            return await _browser_client.navigate(params["url"])
+        elif action == "snapshot":
+            return await _browser_client.snapshot()
+        elif action == "click":
+            if "ref" not in params:
+                raise HTTPException(status_code=400, detail="params.ref is required for click")
+            return await _browser_client.click(params["ref"])
+        elif action == "fill":
+            if "ref" not in params or "value" not in params:
+                raise HTTPException(status_code=400, detail="params.ref and params.value are required for fill")
+            return await _browser_client.fill(params["ref"], params["value"])
+        elif action == "evaluate":
+            if "js" not in params:
+                raise HTTPException(status_code=400, detail="params.js is required for evaluate")
+            return await _browser_client.evaluate(params["js"])
+        elif action == "screenshot":
+            return await _browser_client.screenshot()
+        else:
+            raise HTTPException(status_code=400, detail=f"Unknown action: {action!r}")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/browser/close")
+async def browser_close():
+    """Tear down the browser session."""
+    await _browser_client.close()
+    return {"status": "ok"}
+
+
+@app.get("/api/browser/status")
+async def browser_status():
+    """Return the current browser session state."""
+    is_running = (
+        _browser_client._context is not None
+        and _browser_client._context.browser.is_connected()
+    )
+    state = "running" if is_running else "closed"
+
+    url = ""
+    if is_running and _browser_client._page is not None:
+        url = _browser_client._page.url or ""
+
+    profile = str(Path.home() / ".eng-buddy" / "browser-profile")
+    return {"state": state, "url": url, "profile": profile}
 
 
 if __name__ == "__main__":
