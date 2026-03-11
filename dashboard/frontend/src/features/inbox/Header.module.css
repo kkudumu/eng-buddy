@@ -21,3 +21,32 @@
   -webkit-text-fill-color: transparent;
   background-clip: text;
 }
+
+.controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.controls select,
+.controls button {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.75rem;
+  padding: 4px 8px;
+  border: 1px solid var(--border-subtle, rgba(240, 230, 255, 0.12));
+  background: var(--bg-glass, rgba(30, 20, 50, 0.6));
+  color: var(--text-primary, #f0e6ff);
+  border-radius: var(--radius-sm, 6px);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.controls select:hover,
+.controls button:hover {
+  background: var(--bg-glass-hover, rgba(50, 35, 80, 0.6));
+  border-color: var(--accent-pink, #f4a8c8);
+}
+
+.briefingBtn {
+  font-weight: 600;
+}

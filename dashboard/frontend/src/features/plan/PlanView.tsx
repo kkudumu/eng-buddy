@@ -3,6 +3,7 @@ import { usePlan, useUpdateStep, useApproveRemaining, useExecutePlan, useRegener
 import { useUIStore } from '../../stores/ui';
 import { Button } from '../../components/Button';
 import { PhaseAccordion } from './PhaseAccordion';
+import { Terminal } from '../terminal/Terminal';
 import styles from './PlanView.module.css';
 
 interface PlanViewProps {
@@ -21,6 +22,7 @@ export function PlanView({ cardId }: PlanViewProps) {
 
   const [feedbackText, setFeedbackText] = useState('');
   const [showFeedback, setShowFeedback] = useState(false);
+  const [terminalInfo, setTerminalInfo] = useState<{ decisionEventId: number } | null>(null);
 
   if (isLoading) {
     return <div className={styles.loading}>Loading plan...</div>;
@@ -63,7 +65,15 @@ export function PlanView({ cardId }: PlanViewProps) {
   }
 
   function handleExecute() {
-    executePlan.mutate();
+    executePlan.mutate(undefined, {
+      onSuccess: (result) => {
+        // If the server returns a decision_event_id, open the terminal
+        const eventId = (result as unknown as Record<string, unknown>)?.decision_event_id;
+        if (typeof eventId === 'number') {
+          setTerminalInfo({ decisionEventId: eventId });
+        }
+      },
+    });
   }
 
   function handleRegenerate() {
@@ -134,6 +144,14 @@ export function PlanView({ cardId }: PlanViewProps) {
           />
           <Button label="Cancel" onClick={() => setShowFeedback(false)} variant="ghost" />
         </div>
+      )}
+
+      {terminalInfo && (
+        <Terminal
+          cardId={cardId}
+          decisionEventId={terminalInfo.decisionEventId}
+          onClose={() => setTerminalInfo(null)}
+        />
       )}
 
       <div className={styles.phases}>

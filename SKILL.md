@@ -1319,11 +1319,58 @@ What do you want to tackle first?"
 
 eng-buddy can learn, store, and execute repeatable workflows called **playbooks**.
 
+#### CRITICAL: Playbooks Are Machine-Executable, NOT Human Documentation
+
+**Playbooks are for eng-buddy to execute autonomously.** They are NOT human-readable runbooks or reference docs. Every playbook must contain the exact tool calls, parameters, and verification steps needed for eng-buddy to complete the task with zero human intervention (beyond the user typing "approve").
+
+**When creating or drafting a playbook, EVERY step must specify:**
+- The exact MCP tool or API call (e.g. `mcp__playwright__browser_navigate`, `mcp__mcp-atlassian__jira_add_comment`, `mcp__slack__slack_post_message`, `mcp__freshservice-mcp__update_ticket`)
+- The exact parameters to pass (URLs, selectors, message bodies, API fields)
+- Any JS evaluation code verbatim (e.g. CodeMirror API calls, DOM queries)
+- Verification logic (what to check in snapshots/responses to confirm success)
+- Rollback steps if verification fails
+
+**Playbooks can use ANY tool available to eng-buddy:**
+- Playwright MCP (browser automation, form filling, clicking, JS evaluation)
+- Jira MCP (create/update issues, add comments, transition tickets)
+- Freshservice MCP (create/update tickets, service requests)
+- Slack MCP (post messages, reply to threads, get channel history)
+- Gmail MCP (send emails, draft messages, search)
+- Google Calendar MCP (create/search events)
+- Bash (run scripts, API calls via curl)
+- Read/Write/Edit (file operations)
+- Any other MCP server or tool
+
+**Bad playbook step** (too vague for automation):
+```json
+{"description": "Update the Jira ticket", "tool": "jira", "notes": "Add a comment about the change"}
+```
+
+**Good playbook step** (eng-buddy can execute this directly):
+```json
+{
+  "description": "Add implementation comment to Jira ticket",
+  "tool": "mcp__mcp-atlassian__jira_add_comment",
+  "tool_params": {
+    "issue_key": "{ticket_id}",
+    "body": "## Implementation Complete\\n\\n**Date**: {date}\\n**What**: {description}\\n**How**: {technical_details}\\n**Verified**: {verification_result}"
+  }
+}
+```
+
+**When observing work for playbook extraction**, capture:
+- Every MCP tool call and its exact parameters
+- Every Playwright navigation URL, click target, and JS evaluation
+- Every API endpoint, method, headers, and body
+- Every verification step (what was checked and what the expected result was)
+- Every workaround for known issues (CodeMirror API, SPA bleed, element type mismatches)
+- Rollback procedures with exact reversal steps
+
 #### How Playbooks Work
 
 **Observation**: As you work tickets, eng-buddy captures a full trace -- tool calls, your instructions, corrections, manual actions, decisions, and questions. This happens continuously via hooks.
 
-**Extraction**: When a ticket is completed or a pattern is detected, eng-buddy drafts a playbook with action-bound steps. Each step specifies which tool to use, what parameters to pass, and whether human involvement is needed.
+**Extraction**: When a ticket is completed or a pattern is detected, eng-buddy drafts a playbook with action-bound steps. Each step specifies the exact MCP tool, parameters, and verification logic needed for autonomous execution.
 
 **Approval**: Draft playbooks appear on the dashboard (Playbooks tab) for your review. You can edit steps, approve, or reject.
 
@@ -1340,8 +1387,8 @@ eng-buddy can learn, store, and execute repeatable workflows called **playbooks*
 
 Three paths:
 
-1. **Watch and Learn**: Work a ticket normally. eng-buddy drafts a playbook from your session.
-2. **Describe**: Say "Create a playbook for [task]. Steps: [1, 2, 3]." eng-buddy expands with tool bindings.
+1. **Watch and Learn**: Work a ticket normally. eng-buddy captures exact tool calls and drafts a playbook from your session. Every MCP call, Playwright action, and API request is recorded verbatim.
+2. **Describe**: Say "Create a playbook for [task]. Steps: [1, 2, 3]." eng-buddy expands with exact tool bindings, parameters, and verification steps.
 3. **Pattern Detection**: eng-buddy analyzes traces and proposes playbooks for repeated workflows.
 
 #### Managing Playbooks
@@ -1373,6 +1420,45 @@ Playbook steps bind to tools via the registry at `~/.claude/eng-buddy/playbooks/
 - Per-action defaults (assignee, board, sprint, etc.)
 
 Defaults are modular -- one `.defaults.yml` file per tool, auto-discovered.
+
+#### Playbook JSON Schema
+
+Each playbook is a JSON file in `~/.claude/eng-buddy/playbooks/` with this structure:
+
+```json
+{
+  "id": "unique-kebab-id",
+  "name": "Human-readable name",
+  "description": "What this playbook does and when to use it",
+  "trigger_keywords": ["keywords", "for", "matching"],
+  "input_params": {
+    "param_name": {"type": "string", "description": "...", "required": true}
+  },
+  "steps": [
+    {
+      "number": 1,
+      "description": "What this step does",
+      "tool": "mcp__tool__name",
+      "tool_params": {"exact": "params"},
+      "requires_human": false,
+      "notes": "Workarounds, gotchas, context"
+    }
+  ],
+  "rollback": {
+    "description": "How to undo",
+    "steps": ["exact", "reversal", "steps"]
+  },
+  "known_issues": [
+    {"issue": "Name", "description": "...", "fix": "..."}
+  ],
+  "confidence": 1.0,
+  "version": 1,
+  "executions": 0,
+  "source": "manual|observed|extracted",
+  "runbook_path": "path to human-readable runbook if exists",
+  "related_links": {}
+}
+```
 
 ### Task State File Maintenance (CRITICAL)
 

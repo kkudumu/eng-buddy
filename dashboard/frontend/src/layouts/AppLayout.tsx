@@ -1,10 +1,12 @@
 import { Outlet } from 'react-router-dom'
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, useMemo } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { useSSE } from '../hooks/useSSE'
 import type { SSEEvent } from '../hooks/useSSE'
 import { useDebugStore } from '../stores/debug'
 import { useSettings } from '../hooks/useSettings'
+import { useCards } from '../hooks/useCards'
+import { useUIStore } from '../stores/ui'
 import { Header } from '../features/inbox/Header'
 import { Sidebar } from '../features/inbox/Sidebar'
 import { ToastContainer } from '../components/ToastContainer'
@@ -18,6 +20,18 @@ export function AppLayout() {
   useSettings()  // hydrates theme/mode from server on mount
   const queryClient = useQueryClient()
   const [briefingOpen, setBriefingOpen] = useState(false)
+  const activeSource = useUIStore((s) => s.activeSource)
+  const { data, isLoading } = useCards(activeSource)
+
+  const counts = data?.counts ?? { pending: 0, held: 0, approved: 0, completed: 0, failed: 0 }
+  const sourceCounts = useMemo(() => {
+    const cards = data?.cards ?? []
+    const result: Record<string, number> = {}
+    for (const card of cards) {
+      result[card.source] = (result[card.source] ?? 0) + 1
+    }
+    return result
+  }, [data?.cards])
 
   const handleSSE = useCallback(
     (_event: SSEEvent) => {
@@ -63,10 +77,10 @@ export function AppLayout() {
         ))}
       </div>
 
-      <Header pendingCount={0} isLoading={false} onBriefingClick={() => setBriefingOpen(true)} />
+      <Header pendingCount={counts.pending} isLoading={isLoading} onBriefingClick={() => setBriefingOpen(true)} />
 
       <div className={styles.body}>
-        <Sidebar />
+        <Sidebar counts={counts} sourceCounts={sourceCounts} />
         <div className={styles.content}>
           <Outlet />
         </div>

@@ -2,7 +2,10 @@ import type { Card } from '../../api/types'
 import { Badge } from '../../components/Badge'
 import { Button } from '../../components/Button'
 import { useUIStore } from '../../stores/ui'
+import { useCardDecision } from '../../hooks/useCardDecision'
 import { PlanView } from '../plan/PlanView'
+import { ActionTray } from './ActionTray'
+import { GmailActions } from './GmailActions'
 import styles from './CardItem.module.css'
 
 interface CardItemProps {
@@ -26,8 +29,16 @@ export function CardItem({ card, style }: CardItemProps) {
   const sourceClass = styles[card.source] ?? ''
   const expandedPlanCards = useUIStore((s) => s.expandedPlanCards)
   const togglePlanExpanded = useUIStore((s) => s.togglePlanExpanded)
+  const expandedActions = useUIStore((s) => s.expandedActions)
+  const toggleExpandedActions = useUIStore((s) => s.toggleExpandedActions)
+  const decision = useCardDecision()
 
   const isPlanExpanded = expandedPlanCards.has(card.id)
+  const isActionsExpanded = expandedActions.has(card.id)
+
+  const handleApprove = () => {
+    decision.mutate({ cardId: card.id, action: 'approve', decision: 'approved', followUp: { endpoint: 'status', body: { status: 'approved' } } })
+  }
 
   return (
     <div className={`${styles.card} ${sourceClass}`} style={style}>
@@ -48,7 +59,18 @@ export function CardItem({ card, style }: CardItemProps) {
           onClick={() => togglePlanExpanded(card.id)}
           variant="ghost"
         />
+        <Button
+          label={isActionsExpanded ? 'Hide Actions' : 'Actions'}
+          onClick={() => toggleExpandedActions(card.id)}
+          variant="ghost"
+        />
       </div>
+      {isActionsExpanded && (
+        <>
+          <ActionTray card={card} onApprove={handleApprove} />
+          {card.source === 'gmail' && <GmailActions card={card} />}
+        </>
+      )}
       {isPlanExpanded && <PlanView cardId={card.id} />}
     </div>
   )

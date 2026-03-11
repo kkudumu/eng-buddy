@@ -1,6 +1,5 @@
 import type {
   CardsResponse,
-  InboxViewResponse,
   CardSource,
   PlanResponse,
   StepUpdateResponse,
@@ -11,6 +10,18 @@ import type {
   PollersResponse,
   PlaybookDetail,
   PlaybookHistoryResponse,
+  KnowledgeIndexResponse,
+  KnowledgeDocResponse,
+  LearningsSummaryResponse,
+  LearningsEventsResponse,
+  ChatHistoryResponse,
+  RefineResponse,
+  SuggestionsResponse,
+  TasksResponse,
+  JiraSprintResponse,
+  DailyLogsResponse,
+  DailyLogResponse,
+  BriefingResponse,
 } from './types'
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
@@ -22,10 +33,6 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
 export async function fetchCards(source?: CardSource): Promise<CardsResponse> {
   const param = source && source !== 'all' ? `source=${source}` : 'status=all'
   return request<CardsResponse>(`/api/cards?${param}`)
-}
-
-export async function fetchInboxView(source: string, days: number = 3): Promise<InboxViewResponse> {
-  return request<InboxViewResponse>(`/api/inbox-view?source=${source}&days=${days}`)
 }
 
 export async function performCardAction(cardId: number, action: string, body?: Record<string, unknown>): Promise<unknown> {
@@ -106,6 +113,10 @@ export async function postRestart(): Promise<{ status: string }> {
   return request('/api/restart', { method: 'POST' })
 }
 
+export async function fetchRestartStatus(): Promise<{ phase: string; message: string }> {
+  return request('/api/restart-status')
+}
+
 export async function postDecision(
   entity: 'cards' | 'tasks',
   id: number,
@@ -165,4 +176,99 @@ export async function deletePlaybookDraft(playbookId: string): Promise<{ status:
 
 export async function fetchPlaybookHistory(playbookId: string): Promise<PlaybookHistoryResponse> {
   return request<PlaybookHistoryResponse>(`/api/playbooks/${playbookId}/history`)
+}
+
+export async function openSession(
+  entity: 'cards' | 'tasks',
+  id: number,
+): Promise<{ status: string }> {
+  return request(`/api/${entity}/${id}/open-session`, { method: 'POST' })
+}
+
+export async function gmailAnalyze(
+  cardId: number,
+): Promise<{ suggested_labels: string[]; draft_response: string; reasoning: string }> {
+  return request(`/api/cards/${cardId}/gmail-analyze`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  })
+}
+
+export async function fetchKnowledgeIndex(): Promise<KnowledgeIndexResponse> {
+  return request<KnowledgeIndexResponse>('/api/knowledge/index')
+}
+
+export async function fetchKnowledgeDoc(path: string): Promise<KnowledgeDocResponse> {
+  return request<KnowledgeDocResponse>(`/api/knowledge/doc?path=${encodeURIComponent(path)}`)
+}
+
+export async function fetchLearningsSummary(range: string, date: string): Promise<LearningsSummaryResponse> {
+  return request<LearningsSummaryResponse>(`/api/learnings/summary?range=${encodeURIComponent(range)}&date=${encodeURIComponent(date)}`)
+}
+
+export async function fetchLearningsEvents(range: string, date: string): Promise<LearningsEventsResponse> {
+  return request<LearningsEventsResponse>(`/api/learnings/events?range=${encodeURIComponent(range)}&date=${encodeURIComponent(date)}`)
+}
+
+export async function fetchChatHistory(
+  entity: 'cards' | 'tasks',
+  id: number,
+): Promise<ChatHistoryResponse> {
+  return request<ChatHistoryResponse>(`/api/${entity}/${id}/chat-history`)
+}
+
+export async function postRefine(
+  entity: 'cards' | 'tasks',
+  id: number,
+  message: string,
+  history: Array<{ role: string; content: string }>,
+): Promise<RefineResponse> {
+  return request<RefineResponse>(`/api/${entity}/${id}/refine`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message, history }),
+  })
+}
+
+export async function fetchSuggestions(refresh?: boolean): Promise<SuggestionsResponse> {
+  const param = refresh ? '?refresh=true' : ''
+  const data = await request<SuggestionsResponse>(`/api/suggestions${param}`)
+  // Flatten sections into a convenience `cards` array expected by SuggestionsView
+  const allCards = (data.sections ?? []).flatMap((s) => s.cards ?? []).concat(data.held ?? [])
+  return { ...data, cards: allCards }
+}
+
+export async function fetchTasks(): Promise<TasksResponse> {
+  return request<TasksResponse>('/api/tasks')
+}
+
+export async function fetchJiraSprint(refresh?: boolean): Promise<JiraSprintResponse> {
+  const param = refresh ? '?refresh=true' : ''
+  return request<JiraSprintResponse>(`/api/jira/sprint${param}`)
+}
+
+export async function fetchDailyLogs(): Promise<DailyLogsResponse> {
+  return request<DailyLogsResponse>('/api/daily/logs')
+}
+
+export async function fetchDailyLog(day: string): Promise<DailyLogResponse> {
+  return request<DailyLogResponse>(`/api/daily/logs/${encodeURIComponent(day)}`)
+}
+
+export async function fetchBriefing(): Promise<BriefingResponse> {
+  return request<BriefingResponse>('/api/briefing')
+}
+
+export async function sendDebugToClaude(
+  logLine: string,
+  level: string,
+  tab: string,
+  details?: Record<string, unknown>,
+): Promise<{ queued: boolean; message: string }> {
+  return request('/api/debug/send-to-claude', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ log_line: logLine, level, tab, details }),
+  })
 }

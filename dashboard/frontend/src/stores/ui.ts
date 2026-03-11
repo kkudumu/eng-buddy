@@ -3,22 +3,25 @@ import type { CardSource, SettingsResponse } from '../api/types'
 
 export type ThemeName = 'neon-dreams' | 'midnight-ops' | 'soft-kitty'
 export type ModeName = 'dark' | 'light'
+export type TerminalName = 'Terminal' | 'Warp' | 'iTerm' | 'Alacritty' | 'kitty'
 
 interface UIState {
   activeSource: CardSource
-  activeCardId: number | null
   expandedActions: Set<number>
   expandedPlanCards: Set<number>
   editingStep: { cardId: number; stepIndex: number } | null
   theme: ThemeName
   mode: ModeName
+  terminal: TerminalName
+  macosNotifications: boolean
   setActiveSource: (source: CardSource) => void
-  setActiveCard: (id: number | null) => void
   toggleExpandedActions: (id: number) => void
   togglePlanExpanded: (cardId: number) => void
   setEditingStep: (ref: { cardId: number; stepIndex: number } | null) => void
   setTheme: (theme: ThemeName) => void
   toggleMode: () => void
+  setTerminal: (terminal: TerminalName) => void
+  setMacosNotifications: (enabled: boolean) => void
   hydrateSettings: (settings: SettingsResponse) => void
 }
 
@@ -29,16 +32,15 @@ function applyThemeToDOM(theme: string, mode: string) {
 
 export const useUIStore = create<UIState>()((set) => ({
   activeSource: 'all',
-  activeCardId: null,
   expandedActions: new Set(),
   expandedPlanCards: new Set(),
   editingStep: null,
   theme: 'neon-dreams',
   mode: 'dark',
+  terminal: 'Terminal',
+  macosNotifications: false,
 
   setActiveSource: (source) => set({ activeSource: source }),
-
-  setActiveCard: (id) => set({ activeCardId: id }),
 
   toggleExpandedActions: (id) =>
     set((state) => {
@@ -70,10 +72,16 @@ export const useUIStore = create<UIState>()((set) => ({
       return { mode }
     }),
 
+  setTerminal: (terminal) => set({ terminal }),
+
+  setMacosNotifications: (enabled) => set({ macosNotifications: enabled }),
+
   hydrateSettings: (settings) => {
     const theme = (settings.theme || 'neon-dreams') as ThemeName
     const mode = (settings.mode || 'dark') as ModeName
+    const terminal = (settings.terminal || 'Terminal') as TerminalName
+    const macosNotifications = settings.macos_notifications ?? false
     applyThemeToDOM(theme, mode)
-    set({ theme, mode })
+    set({ theme, mode, terminal, macosNotifications })
   },
 }))

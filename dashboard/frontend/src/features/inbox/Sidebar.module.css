@@ -6,6 +6,50 @@
   gap: 2px;
 }
 
+.navSection {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.navItem {
+  display: block;
+  padding: 8px 16px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: var(--font-body);
+  font-weight: 600;
+  font-size: 0.85rem;
+  cursor: pointer;
+  border-left: 3px solid transparent;
+  border-radius: 0 8px 8px 0;
+  transition: all 0.15s;
+  width: 100%;
+  text-align: left;
+}
+
+.navItem:hover {
+  background: rgba(240, 230, 255, 0.04);
+  color: var(--text-primary);
+}
+
+.navActive {
+  border-left-color: var(--accent-blue, #9ac4ff);
+  color: var(--text-primary);
+  background: rgba(154, 196, 255, 0.06);
+}
+
+.filterLabel {
+  padding: 4px 16px;
+  font-size: 0.65rem;
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--text-muted);
+  opacity: 0.6;
+}
+
 .item {
   display: flex;
   align-items: center;
