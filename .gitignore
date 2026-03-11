@@ -6,10 +6,10 @@ knowledge/kioja-profile.md
 knowledge/*-profile.md
 
 # Daily, weekly, monthly logs (user-specific work logs)
-daily/
-weekly/
-monthly/
-archive/
+/daily/
+/weekly/
+/monthly/
+/archive/
 
 # Incidents (may contain sensitive production information)
 incidents/

@@ -1,0 +1,23 @@
+.container { padding: 1rem; }
+.heading { font-family: var(--font-heading, var(--font)); color: var(--text); font-size: 1.2rem; margin-bottom: 1rem; }
+.loading, .empty, .placeholder { color: var(--muted); font-family: var(--font-mono); padding: 2rem; font-size: 0.85rem; }
+.layout { display: grid; grid-template-columns: 180px 1fr; gap: 1rem; }
+.dateList { display: flex; flex-direction: column; gap: 0.25rem; }
+.dateBtn {
+  font-family: var(--font-mono); font-size: 0.75rem; padding: 0.4rem 0.5rem;
+  border: 1px solid var(--border-faint); background: transparent;
+  color: var(--text); text-align: left; cursor: pointer; border-radius: var(--radius-sm, 4px);
+}
+.dateBtn:hover { background: var(--hover-bg); }
+.selected { background: var(--hover-bg); border-color: var(--border); }
+.content {
+  background: var(--card-bg); border: 1px solid var(--border-subtle);
+  border-radius: var(--radius, 8px); padding: 1rem; min-height: 300px;
+}
+.dateHeading { font-family: var(--font-mono); font-size: 0.9rem; color: var(--text); margin-bottom: 0.75rem; }
+.stats { display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 0.75rem; }
+.stat { font-family: var(--font-mono); font-size: 0.7rem; color: var(--jira); padding: 2px 6px; border: 1px solid var(--border-faint); border-radius: 4px; }
+.logContent {
+  font-family: var(--font-mono); font-size: 0.8rem; color: var(--text);
+  white-space: pre-wrap; word-break: break-word; line-height: 1.5;
+}
