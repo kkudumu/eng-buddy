@@ -1,5 +1,8 @@
 import { create } from 'zustand'
-import type { CardSource } from '../api/types'
+import type { CardSource, SettingsResponse } from '../api/types'
+
+export type ThemeName = 'neon-dreams' | 'midnight-ops' | 'soft-kitty'
+export type ModeName = 'dark' | 'light'
 
 interface UIState {
   activeSource: CardSource
@@ -7,19 +10,31 @@ interface UIState {
   expandedActions: Set<number>
   expandedPlanCards: Set<number>
   editingStep: { cardId: number; stepIndex: number } | null
+  theme: ThemeName
+  mode: ModeName
   setActiveSource: (source: CardSource) => void
   setActiveCard: (id: number | null) => void
   toggleExpandedActions: (id: number) => void
   togglePlanExpanded: (cardId: number) => void
   setEditingStep: (ref: { cardId: number; stepIndex: number } | null) => void
+  setTheme: (theme: ThemeName) => void
+  toggleMode: () => void
+  hydrateSettings: (settings: SettingsResponse) => void
 }
 
-export const useUIStore = create<UIState>((set) => ({
+function applyThemeToDOM(theme: string, mode: string) {
+  document.documentElement.dataset.theme = theme
+  document.documentElement.dataset.mode = mode
+}
+
+export const useUIStore = create<UIState>()((set) => ({
   activeSource: 'all',
   activeCardId: null,
   expandedActions: new Set(),
   expandedPlanCards: new Set(),
   editingStep: null,
+  theme: 'neon-dreams',
+  mode: 'dark',
 
   setActiveSource: (source) => set({ activeSource: source }),
 
@@ -42,4 +57,23 @@ export const useUIStore = create<UIState>((set) => ({
     }),
 
   setEditingStep: (ref) => set({ editingStep: ref }),
+
+  setTheme: (theme) => {
+    applyThemeToDOM(theme, useUIStore.getState().mode)
+    set({ theme })
+  },
+
+  toggleMode: () =>
+    set((state) => {
+      const mode = state.mode === 'dark' ? 'light' : 'dark'
+      applyThemeToDOM(state.theme, mode)
+      return { mode }
+    }),
+
+  hydrateSettings: (settings) => {
+    const theme = (settings.theme || 'neon-dreams') as ThemeName
+    const mode = (settings.mode || 'dark') as ModeName
+    applyThemeToDOM(theme, mode)
+    set({ theme, mode })
+  },
 }))
