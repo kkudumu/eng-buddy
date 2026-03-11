@@ -50,7 +50,7 @@ export function LearningsView() {
                 return (
                   <div key={i} className={styles.event}>
                     <span className={styles.eventTitle}>{String(e.title ?? e.summary ?? 'Event')}</span>
-                    {e.category && <span className={styles.eventCategory}>{String(e.category)}</span>}
+                    {e.category ? <span className={styles.eventCategory}>{String(e.category)}</span> : null}
                   </div>
                 )
               })}
