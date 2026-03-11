@@ -129,6 +129,7 @@ async def lifespan(app: FastAPI):
     migrate()
     _start_suggestion_refresh_worker()
     yield
+    await _browser_client.close()
 
 app = FastAPI(lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")

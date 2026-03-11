@@ -253,6 +253,26 @@ class TrustEvaluator:
         tool = step.get("tool", "")
         risk = step.get("risk", "low")
 
+        # Browser tools: check sub-action before applying blanket destructive classification
+        if tool == "playwright_cli":
+            cmd = (step.get("command") or "").strip().lower()
+            if cmd.startswith(("snapshot", "screenshot")):
+                return TrustDecision(
+                    can_auto_execute=True,
+                    tier=TrustTier.AUTO_RUN.value,
+                    reason="playwright_cli read-only action: snapshot/screenshot",
+                    conditions_met=["read_only_tool"],
+                )
+        if tool == "python_browser":
+            action = (step.get("action") or "").lower()
+            if action in ("snapshot", "screenshot", "status"):
+                return TrustDecision(
+                    can_auto_execute=True,
+                    tier=TrustTier.AUTO_RUN.value,
+                    reason=f"python_browser read-only action: {action}",
+                    conditions_met=["read_only_tool"],
+                )
+
         if tool in READ_ONLY_TOOLS:
             return TrustDecision(
                 can_auto_execute=True,
