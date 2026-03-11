@@ -5,6 +5,7 @@ import { useSSE } from '../hooks/useSSE'
 import type { SSEEvent } from '../hooks/useSSE'
 import { Header } from '../features/inbox/Header'
 import { Sidebar } from '../features/inbox/Sidebar'
+import { ToastContainer } from '../components/ToastContainer'
 import styles from './AppLayout.module.css'
 
 const particles = ['\u273f', '\u22c6', '\u2661', '\u2727', '\u273f', '\u22c6', '\u2661', '\u2727']
@@ -48,6 +49,8 @@ export function AppLayout() {
           <Outlet />
         </div>
       </div>
+
+      <ToastContainer />
     </div>
   )
 }

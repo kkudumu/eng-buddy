@@ -1,0 +1,24 @@
+.container {
+  position: fixed; bottom: 1rem; right: 1rem;
+  display: flex; flex-direction: column-reverse; gap: 0.5rem;
+  z-index: 10000; max-width: 360px;
+}
+.toast {
+  padding: 0.75rem 1rem; border-radius: var(--radius-sm, 8px);
+  font-family: var(--font-mono); font-size: 0.8rem;
+  display: flex; align-items: center; gap: 0.5rem;
+  animation: slideIn 0.2s ease-out;
+  border: 1px solid var(--border-subtle);
+  background: var(--surface, #1a1a1a); color: var(--text, #fff);
+}
+.success { border-left: 3px solid var(--fresh); }
+.error { border-left: 3px solid var(--gmail); }
+.info { border-left: 3px solid var(--jira); }
+.close {
+  background: none; border: none; color: var(--muted);
+  cursor: pointer; font-size: 1.1rem; margin-left: auto;
+}
+@keyframes slideIn {
+  from { opacity: 0; transform: translateX(20px); }
+  to { opacity: 1; transform: translateX(0); }
+}
