@@ -9,6 +9,8 @@ import type {
   RegenerateResponse,
   SettingsResponse,
   PollersResponse,
+  PlaybookDetail,
+  PlaybookHistoryResponse,
 } from './types'
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
@@ -136,4 +138,31 @@ export async function executePlaybook(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ playbook_id: playbookId, ticket_context: ticketContext, approval }),
   })
+}
+
+export async function fetchPlaybookDetail(playbookId: string): Promise<PlaybookDetail> {
+  return request<PlaybookDetail>(`/api/playbooks/${playbookId}`)
+}
+
+export async function updatePlaybookDraft(
+  playbookId: string,
+  body: Partial<PlaybookDetail>,
+): Promise<{ status: string }> {
+  return request(`/api/playbooks/drafts/${playbookId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
+export async function promotePlaybook(playbookId: string): Promise<{ status: string }> {
+  return request(`/api/playbooks/${playbookId}/promote`, { method: 'POST' })
+}
+
+export async function deletePlaybookDraft(playbookId: string): Promise<{ status: string }> {
+  return request(`/api/playbooks/drafts/${playbookId}`, { method: 'DELETE' })
+}
+
+export async function fetchPlaybookHistory(playbookId: string): Promise<PlaybookHistoryResponse> {
+  return request<PlaybookHistoryResponse>(`/api/playbooks/${playbookId}/history`)
 }
