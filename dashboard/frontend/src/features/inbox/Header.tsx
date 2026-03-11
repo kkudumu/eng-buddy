@@ -3,6 +3,9 @@ import type { MascotMood } from '../../components/ChibiMascot'
 import { ThemePicker } from '../header/ThemePicker'
 import { ModeToggle } from '../header/ModeToggle'
 import { TerminalPicker } from '../header/TerminalPicker'
+import { RestartButton } from '../header/RestartButton'
+import { PollerTimers } from '../header/PollerTimers'
+import { NotificationToggle } from '../header/NotificationToggle'
 import { useSettings } from '../../hooks/useSettings'
 import styles from './Header.module.css'
 
@@ -26,10 +29,13 @@ export function Header({ pendingCount, isLoading }: HeaderProps) {
         <ChibiMascot mood={getMood(pendingCount, isLoading)} size={40} />
         <span className={styles.title}>ENG-BUDDY</span>
       </div>
+      <PollerTimers />
       <div className={styles.controls}>
         <ThemePicker />
         <ModeToggle />
         <TerminalPicker />
+        <NotificationToggle />
+        <RestartButton />
       </div>
     </header>
   )

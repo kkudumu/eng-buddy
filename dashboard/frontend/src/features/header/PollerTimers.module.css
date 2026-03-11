@@ -1,0 +1,17 @@
+.timers { display: flex; gap: 0.5rem; align-items: center; }
+.badge {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  padding: 2px 8px;
+  border: 1px solid var(--border-subtle);
+  background: var(--surface, var(--bg-glass));
+  color: var(--text, var(--text-primary));
+  border-radius: var(--radius-badge, 6px);
+  cursor: pointer;
+  transition: background var(--transition-speed, 0.15s);
+}
+.badge:hover { background: var(--hover-bg, var(--bg-glass-hover)); }
+.healthy { border-color: var(--fresh); }
+.warning { border-color: var(--needs-response); }
+.error { border-color: var(--gmail); }
+.syncing { opacity: 0.6; }
