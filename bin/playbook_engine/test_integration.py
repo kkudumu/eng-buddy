@@ -25,7 +25,7 @@ def env(tmp_path):
             "jira": {"type": "mcp", "prefix": "mcp__mcp-atlassian__jira_", "capabilities": ["create_issue", "transition_issue"], "auth": "persistent", "domains": ["ticket_management"]},
             "slack": {"type": "mcp", "prefix": "mcp__slack__", "capabilities": ["post_message"], "auth": "persistent", "domains": ["communication"]},
             "freshservice": {"type": "mcp", "prefix": "mcp__freshservice-mcp__", "capabilities": ["update_ticket"], "auth": "persistent", "domains": ["service_desk"]},
-            "playwright": {"type": "browser", "prefix": "mcp__playwright__", "capabilities": ["navigate"], "auth": "per_domain", "domains": ["web_admin"]},
+            "playwright_cli": {"type": "browser", "tool": "playwright_cli", "capabilities": ["navigate", "click", "fill", "snapshot", "eval"], "auth": "per_domain", "domains": ["standard_web_ui"]},
         }
     }))
     (reg_dir / "jira.defaults.yml").write_text(yaml.dump({

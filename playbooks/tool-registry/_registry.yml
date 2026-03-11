@@ -76,20 +76,41 @@ tools:
     auth: persistent
     domains: [documentation]
 
-  playwright:
+  playwright_cli:
     type: browser
-    prefix: mcp__playwright__
+    tool: playwright_cli
     capabilities:
       - navigate
       - click
-      - fill_form
+      - fill
       - screenshot
       - snapshot
-      - type
-      - select_option
+      - eval
+      - state-save
+      - state-load
     auth: per_domain
-    auth_store: ~/.claude/eng-buddy/auth/sessions.enc
-    domains: [web_admin, sso_config, any_web_ui]
+    session_flag: "-s=eng-buddy"
+    headed: true
+    domains: [freshservice, internal_tools, standard_web_ui]
+    notes: "Use for standard UIs; run via Bash. Not for bot-detection-protected targets."
+
+  python_browser:
+    type: browser
+    tool: python_browser
+    endpoint: "POST localhost:7777/api/browser/execute"
+    capabilities:
+      - navigate
+      - click
+      - fill
+      - screenshot
+      - snapshot
+      - evaluate
+    auth: persistent_chrome_profile
+    profile: ~/.eng-buddy/browser-profile/
+    channel: chrome
+    headed: true
+    domains: [google_admin, bot_detection_protected]
+    notes: "Use for Google Admin Console and bot-detection targets. Dashboard holds long-lived Patchright session."
     fallback: human_handoff
 
   local_scripts:

@@ -62,7 +62,7 @@ def test_parse_expansion_playwright():
             "for_step_index": 1,
             "solution_type": "playwright",
             "url": "https://admin.okta.com/admin/apps",
-            "new_tool_name": "mcp__playwright__browser_navigate",
+            "new_tool_name": "playwright_cli",
         }]
     })
     expansions = parse_expansion_response(response)

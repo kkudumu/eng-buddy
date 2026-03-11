@@ -144,7 +144,7 @@ class TestPlaybookModel:
                 "item_ids": {"type": "array", "description": "Item IDs", "required": True},
             },
             "steps": [
-                {"number": 1, "description": "Navigate", "tool": "mcp__playwright__browser_navigate", "tool_params": {"url": "https://example.com"}},
+                {"number": 1, "description": "Navigate", "tool": "playwright_cli", "command": "goto https://example.com", "session": "eng-buddy"},
             ],
             "rollback": {"description": "Revert the change", "steps": ["Step 1", "Step 2"]},
             "known_issues": [{"issue": "SPA bleed", "description": "Style persists", "fix": "Use setInterval"}],

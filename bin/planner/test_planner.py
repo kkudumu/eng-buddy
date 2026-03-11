@@ -142,7 +142,7 @@ def test_plan_card_triggers_expansion_for_missing_tools(planner):
             "for_step_index": 1,
             "solution_type": "playwright",
             "url": "https://admin.okta.com",
-            "new_tool_name": "mcp__playwright__browser_navigate",
+            "new_tool_name": "playwright_cli",
         }]
     })
 

@@ -94,9 +94,8 @@ PROD_STATE_TOOLS = {
     "mcp__freshservice-mcp__update_ticket",
     "mcp__freshservice-mcp__delete_ticket",
     "mcp__freshservice-mcp__create_service_request",
-    "mcp__playwright__browser_click",
-    "mcp__playwright__browser_fill_form",
-    "mcp__playwright__browser_evaluate",
+    "playwright_cli",
+    "python_browser",
 }
 
 # Read-only tools (always safe)
@@ -110,8 +109,6 @@ READ_ONLY_TOOLS = {
     "mcp__gmail__read_email",
     "mcp__slack__slack_get_channel_history",
     "mcp__slack__slack_get_thread_replies",
-    "mcp__playwright__browser_snapshot",
-    "mcp__playwright__browser_navigate",
     "mcp__context7__resolve-library-id",
     "mcp__context7__query-docs",
 }
