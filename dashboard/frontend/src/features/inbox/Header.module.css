@@ -21,3 +21,9 @@
   -webkit-text-fill-color: transparent;
   background-clip: text;
 }
+
+.controls {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
