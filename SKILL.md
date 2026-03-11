@@ -1324,14 +1324,15 @@ eng-buddy can learn, store, and execute repeatable workflows called **playbooks*
 **Playbooks are for eng-buddy to execute autonomously.** They are NOT human-readable runbooks or reference docs. Every playbook must contain the exact tool calls, parameters, and verification steps needed for eng-buddy to complete the task with zero human intervention (beyond the user typing "approve").
 
 **When creating or drafting a playbook, EVERY step must specify:**
-- The exact MCP tool or API call (e.g. `mcp__playwright__browser_navigate`, `mcp__mcp-atlassian__jira_add_comment`, `mcp__slack__slack_post_message`, `mcp__freshservice-mcp__update_ticket`)
+- The exact tool or API call (e.g. `playwright_cli`, `python_browser`, `mcp__mcp-atlassian__jira_add_comment`, `mcp__slack__slack_post_message`, `mcp__freshservice-mcp__update_ticket`)
 - The exact parameters to pass (URLs, selectors, message bodies, API fields)
 - Any JS evaluation code verbatim (e.g. CodeMirror API calls, DOM queries)
 - Verification logic (what to check in snapshots/responses to confirm success)
 - Rollback steps if verification fails
 
 **Playbooks can use ANY tool available to eng-buddy:**
-- Playwright MCP (browser automation, form filling, clicking, JS evaluation)
+- `playwright_cli` (Freshservice, internal tools, standard UIs — via Bash in session `eng-buddy`)
+- `python_browser` (Google Admin, external targets with bot detection — via dashboard API at localhost:7777)
 - Jira MCP (create/update issues, add comments, transition tickets)
 - Freshservice MCP (create/update tickets, service requests)
 - Slack MCP (post messages, reply to threads, get channel history)
@@ -1360,7 +1361,7 @@ eng-buddy can learn, store, and execute repeatable workflows called **playbooks*
 
 **When observing work for playbook extraction**, capture:
 - Every MCP tool call and its exact parameters
-- Every Playwright navigation URL, click target, and JS evaluation
+- Every browser automation action (playwright_cli or python_browser): navigation URL, click target, element ref, and JS evaluation
 - Every API endpoint, method, headers, and body
 - Every verification step (what was checked and what the expected result was)
 - Every workaround for known issues (CodeMirror API, SPA bleed, element type mismatches)
@@ -1387,7 +1388,7 @@ eng-buddy can learn, store, and execute repeatable workflows called **playbooks*
 
 Three paths:
 
-1. **Watch and Learn**: Work a ticket normally. eng-buddy captures exact tool calls and drafts a playbook from your session. Every MCP call, Playwright action, and API request is recorded verbatim.
+1. **Watch and Learn**: Work a ticket normally. eng-buddy captures exact tool calls and drafts a playbook from your session. Every MCP call, browser automation step (playwright_cli or python_browser), and API request is recorded verbatim.
 2. **Describe**: Say "Create a playbook for [task]. Steps: [1, 2, 3]." eng-buddy expands with exact tool bindings, parameters, and verification steps.
 3. **Pattern Detection**: eng-buddy analyzes traces and proposes playbooks for repeated workflows.
 
@@ -1459,6 +1460,120 @@ Each playbook is a JSON file in `~/.claude/eng-buddy/playbooks/` with this struc
   "related_links": {}
 }
 ```
+
+### Browser Automation
+
+#### Decision Rule
+- Target redirects, challenges, or shows bot detection on first navigation?
+  → use `python_browser` step type (Patchright, persistent Chrome profile)
+- All other targets (Freshservice, internal tools, standard UIs):
+  → use `playwright_cli` step type (@playwright/cli via Bash)
+- NEVER use the Playwright MCP server tools — they have been removed from eng-buddy
+
+#### playwright_cli Steps
+Tool name in playbook JSON: `"playwright_cli"`
+Execution: run via Bash in named session `eng-buddy`
+
+```bash
+# Always use -s=eng-buddy and --headed
+playwright-cli -s=eng-buddy open <url> --headed   # start session + navigate
+playwright-cli -s=eng-buddy goto <url>             # navigate (session already open)
+playwright-cli -s=eng-buddy snapshot               # get element refs (e1, e21, e255...)
+playwright-cli -s=eng-buddy click <ref>            # click by element ref
+playwright-cli -s=eng-buddy fill <ref> "<text>"    # fill input by element ref
+playwright-cli -s=eng-buddy eval "<js>"            # execute JavaScript
+playwright-cli -s=eng-buddy screenshot
+playwright-cli -s=eng-buddy state-save ~/.eng-buddy/sessions/<name>.json
+playwright-cli -s=eng-buddy state-load ~/.eng-buddy/sessions/<name>.json
+playwright-cli -s=eng-buddy close                  # end session when playbook completes
+```
+
+Session persists for entire playbook execution within a single Claude invocation.
+
+Playbook step format:
+```json
+{"tool": "playwright_cli", "command": "goto https://freshservice.com/...", "session": "eng-buddy"}
+{"tool": "playwright_cli", "command": "snapshot"}
+{"tool": "playwright_cli", "command": "click e21"}
+{"tool": "playwright_cli", "command": "fill e15 \"value\""}
+{"tool": "playwright_cli", "command": "eval \"document.querySelector('.CodeMirror').CodeMirror.getValue()\""}
+```
+
+#### python_browser Steps
+Tool name in playbook JSON: `"python_browser"`
+Execution: POST to dashboard API at localhost:7777
+
+```bash
+# Start session first (idempotent)
+curl -X POST localhost:7777/api/browser/start
+
+# Execute actions
+curl -X POST localhost:7777/api/browser/execute \
+  -H "Content-Type: application/json" \
+  -d '{"action": "navigate", "params": {"url": "https://admin.google.com"}}'
+
+curl -X POST localhost:7777/api/browser/execute \
+  -d '{"action": "snapshot", "params": {}}'
+
+curl -X POST localhost:7777/api/browser/execute \
+  -d '{"action": "click", "params": {"ref": "e21"}}'
+
+curl -X POST localhost:7777/api/browser/execute \
+  -d '{"action": "fill", "params": {"ref": "e15", "value": "..."} }'
+
+curl -X POST localhost:7777/api/browser/execute \
+  -d '{"action": "evaluate", "params": {"js": "..."}}'
+
+# Close when done
+curl -X POST localhost:7777/api/browser/close
+```
+
+Playbook step format:
+```json
+{"tool": "python_browser", "action": "navigate", "params": {"url": "https://admin.google.com"}}
+{"tool": "python_browser", "action": "snapshot", "params": {}}
+{"tool": "python_browser", "action": "click", "params": {"ref": "e21"}}
+{"tool": "python_browser", "action": "fill", "params": {"ref": "e15", "value": "{{client_id}}"}}
+{"tool": "python_browser", "action": "evaluate", "params": {"js": "..."}}
+```
+
+The Patchright browser runs headed (you see it), uses your real Chrome profile with existing Google sessions, and patches CDP-level bot detection signals.
+
+See `references/browser-automation.md` for known patterns per target, troubleshooting, and session management.
+
+#### Worked Examples
+
+**Freshservice Portal Designer — inject CSS/JS (playwright_cli)**
+
+```json
+[
+  {"tool": "playwright_cli", "command": "open https://klaviyo.freshservice.com/a/portals/15000014303/customise/ --headed", "session": "eng-buddy"},
+  {"tool": "playwright_cli", "command": "snapshot"},
+  {"tool": "playwright_cli", "command": "eval \"document.querySelector('.CodeMirror').CodeMirror.getValue()\""},
+  {"tool": "playwright_cli", "command": "eval \"document.querySelector('.CodeMirror').CodeMirror.setValue('{{new_head_content}}')\""},
+  {"tool": "playwright_cli", "command": "click e42"},
+  {"tool": "playwright_cli", "command": "close"}
+]
+```
+Notes: CodeMirror editor is only accessible via JS eval. Snapshot first to get the save button ref (e.g. e42). The `getValue()`/`setValue()` pattern is required — direct fill on the editor element does not work.
+
+**Google Admin Console — configure SSO (python_browser)**
+
+```json
+[
+  {"tool": "python_browser", "action": "navigate", "params": {"url": "https://admin.google.com/ac/apps/unified"}},
+  {"tool": "python_browser", "action": "snapshot", "params": {}},
+  {"tool": "python_browser", "action": "click", "params": {"ref": "e14"}},
+  {"tool": "python_browser", "action": "snapshot", "params": {}},
+  {"tool": "python_browser", "action": "fill", "params": {"ref": "e31", "value": "{{entity_id}}"}},
+  {"tool": "python_browser", "action": "fill", "params": {"ref": "e32", "value": "{{acs_url}}"}},
+  {"tool": "python_browser", "action": "click", "params": {"ref": "e45"}},
+  {"tool": "python_browser", "action": "evaluate", "params": {"js": "document.querySelector('[data-status]')?.dataset?.status"}}
+]
+```
+Notes: Uses python_browser because admin.google.com challenges Playwright browsers. Patchright with the real Chrome profile bypasses this. Always snapshot after navigation to get current element refs before clicking.
+
+---
 
 ### Task State File Maintenance (CRITICAL)
 
