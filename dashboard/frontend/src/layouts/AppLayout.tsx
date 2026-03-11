@@ -1,5 +1,5 @@
 import { Outlet } from 'react-router-dom'
-import { useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { useSSE } from '../hooks/useSSE'
 import type { SSEEvent } from '../hooks/useSSE'
@@ -8,12 +8,14 @@ import { Header } from '../features/inbox/Header'
 import { Sidebar } from '../features/inbox/Sidebar'
 import { ToastContainer } from '../components/ToastContainer'
 import { DebugDrawer } from '../features/debug/DebugDrawer'
+import { BriefingModal } from '../features/briefing/BriefingModal'
 import styles from './AppLayout.module.css'
 
 const particles = ['\u273f', '\u22c6', '\u2661', '\u2727', '\u273f', '\u22c6', '\u2661', '\u2727']
 
 export function AppLayout() {
   const queryClient = useQueryClient()
+  const [briefingOpen, setBriefingOpen] = useState(false)
 
   const handleSSE = useCallback(
     (_event: SSEEvent) => {
@@ -59,7 +61,7 @@ export function AppLayout() {
         ))}
       </div>
 
-      <Header pendingCount={0} isLoading={false} />
+      <Header pendingCount={0} isLoading={false} onBriefingClick={() => setBriefingOpen(true)} />
 
       <div className={styles.body}>
         <Sidebar />
@@ -69,6 +71,7 @@ export function AppLayout() {
       </div>
 
       <DebugDrawer />
+      <BriefingModal open={briefingOpen} onClose={() => setBriefingOpen(false)} />
       <ToastContainer />
     </div>
   )

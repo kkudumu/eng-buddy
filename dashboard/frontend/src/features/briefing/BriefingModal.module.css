@@ -1,0 +1,51 @@
+.overlay {
+  position: fixed; inset: 0; z-index: 10001;
+  background: var(--overlay-bg, rgba(0, 0, 0, 0.8));
+  display: flex; align-items: center; justify-content: center;
+}
+.modal {
+  background: var(--card-bg, var(--bg-surface)); border: 1px solid var(--border);
+  border-radius: var(--radius, 12px); width: 90%; max-width: 600px;
+  max-height: 80vh; overflow-y: auto; box-shadow: var(--shadow);
+}
+.header {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 1rem 1.25rem; border-bottom: 1px solid var(--border-subtle);
+}
+.title { font-family: var(--font-heading, var(--font)); font-size: 1.1rem; color: var(--text); }
+.close { background: none; border: none; color: var(--muted); font-size: 1.5rem; cursor: pointer; }
+.loading { padding: 2rem; color: var(--muted); font-family: var(--font-mono); text-align: center; }
+.content { padding: 1.25rem; }
+.loadIndicator {
+  font-family: var(--font-mono); font-size: 0.85rem; color: var(--text);
+  padding: 0.5rem 0.75rem; border: 2px solid; border-radius: var(--radius-sm, 6px);
+  margin-bottom: 1rem; text-align: center;
+}
+.section { margin-bottom: 1.25rem; }
+.section h3 { font-family: var(--font-mono); font-size: 0.8rem; color: var(--muted); margin-bottom: 0.5rem; letter-spacing: 0.05em; }
+.meeting {
+  display: flex; gap: 0.75rem; align-items: center;
+  padding: 0.4rem 0; font-size: 0.85rem; color: var(--text);
+}
+.meetingTime { font-family: var(--font-mono); font-size: 0.8rem; color: var(--jira); min-width: 60px; }
+.joinLink { font-size: 0.7rem; color: var(--fresh); text-decoration: none; padding: 1px 6px; border: 1px solid var(--fresh); border-radius: 4px; }
+.responseItem {
+  display: flex; gap: 0.5rem; align-items: center;
+  padding: 0.35rem 0; font-size: 0.8rem; color: var(--text);
+}
+.source { font-family: var(--font-mono); font-size: 0.65rem; color: var(--muted); }
+.draftBadge { font-size: 0.6rem; padding: 1px 4px; border: 1px solid var(--fresh); color: var(--fresh); border-radius: 3px; }
+.alert {
+  display: flex; gap: 0.5rem; padding: 0.35rem 0;
+  font-size: 0.8rem; color: var(--text);
+}
+.alertType { font-family: var(--font-mono); font-size: 0.65rem; color: var(--gmail); font-weight: bold; }
+.stats {
+  display: flex; gap: 1rem; padding: 0.75rem 0; border-top: 1px solid var(--border-faint);
+  font-family: var(--font-mono); font-size: 0.7rem; color: var(--muted);
+}
+.pepTalk {
+  margin-top: 1rem; padding: 0.75rem; background: var(--surface);
+  border-radius: var(--radius-sm, 6px); font-size: 0.85rem; color: var(--text);
+  font-style: italic; text-align: center;
+}
