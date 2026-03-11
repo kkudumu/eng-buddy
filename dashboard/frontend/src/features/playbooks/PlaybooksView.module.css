@@ -1,17 +1,28 @@
 .container { padding: 1rem; }
-.heading { font-family: var(--font-heading, var(--font)); color: var(--text); font-size: 1.2rem; margin-bottom: 1rem; }
-.subheading { font-family: var(--font-mono); font-size: 0.85rem; color: var(--muted); margin-bottom: 0.75rem; }
-.section { margin-bottom: 2rem; }
+.heading { font-family: var(--font-heading, var(--font)); color: var(--text); font-size: 1.2rem; margin-bottom: 0.75rem; }
+.section { margin-top: 0.75rem; }
 .loading, .empty { color: var(--muted); font-family: var(--font-mono); padding: 2rem; }
+
+.tabs { display: flex; gap: 0; border-bottom: 1px solid var(--border-subtle); }
+.tab {
+  font-family: var(--font-mono); font-size: 0.75rem; padding: 0.5rem 1rem;
+  border: none; background: transparent; color: var(--muted); cursor: pointer;
+  border-bottom: 2px solid transparent; margin-bottom: -1px;
+}
+.tab:hover { color: var(--text); }
+.tabActive { color: var(--text); border-bottom-color: var(--fresh); }
+
 .card {
   background: var(--card-bg); border: 1px solid var(--border-subtle);
-  border-radius: var(--radius, 8px); padding: 1rem; margin-bottom: 0.75rem;
+  border-radius: var(--radius, 8px); padding: 1rem; margin-bottom: 0.75rem; cursor: pointer;
 }
+.card:hover { border-color: var(--border-hover, var(--fresh)); }
 .cardHeader { display: flex; justify-content: space-between; align-items: center; }
 .name { font-size: 0.9rem; color: var(--text); font-weight: 600; }
 .confidence { font-family: var(--font-mono); font-size: 0.7rem; color: var(--fresh); }
 .executions { font-family: var(--font-mono); font-size: 0.7rem; color: var(--jira); }
 .trigger { font-family: var(--font-mono); font-size: 0.7rem; color: var(--muted); margin-top: 0.25rem; }
+.meta { font-family: var(--font-mono); font-size: 0.65rem; color: var(--muted); margin-top: 0.25rem; }
 .steps { margin-top: 0.5rem; }
 .step {
   display: flex; gap: 0.5rem; align-items: center;
@@ -20,15 +31,23 @@
 }
 .stepNum { color: var(--muted); min-width: 20px; }
 .tool { font-size: 0.6rem; color: var(--jira); margin-left: auto; }
+
 .executeRow { display: flex; gap: 0.5rem; margin-top: 0.75rem; padding-top: 0.5rem; border-top: 1px solid var(--border-faint); }
 .approvalInput {
   flex: 1; font-family: var(--font-mono); font-size: 0.75rem; padding: 4px 8px;
   border: 1px solid var(--border-subtle); background: var(--surface); color: var(--text);
   border-radius: var(--radius-sm, 4px);
 }
-.executeBtn {
+.executeBtn, .historyBtn {
   font-family: var(--font-mono); font-size: 0.75rem; padding: 4px 12px;
   border: 1px solid var(--fresh); background: transparent; color: var(--fresh);
   border-radius: var(--radius-sm, 4px); cursor: pointer;
 }
-.executeBtn:hover { background: var(--hover-bg); }
+.historyBtn { border-color: var(--jira); color: var(--jira); }
+.executeBtn:hover, .historyBtn:hover { background: var(--hover-bg); }
+
+.historyHeader { display: flex; justify-content: space-between; align-items: center; font-family: var(--font-mono); font-size: 0.75rem; color: var(--text); margin-bottom: 0.5rem; }
+.clearBtn { font-family: var(--font-mono); font-size: 0.65rem; padding: 2px 8px; border: 1px solid var(--border-subtle); background: transparent; color: var(--muted); border-radius: var(--radius-sm, 4px); cursor: pointer; }
+.clearBtn:hover { background: var(--hover-bg); }
+.historySection { margin-bottom: 1.5rem; }
+.historyTitle { font-family: var(--font-heading, var(--font)); font-size: 0.85rem; color: var(--text); margin: 0 0 0.5rem; }

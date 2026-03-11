@@ -4,6 +4,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { useSSE } from '../hooks/useSSE'
 import type { SSEEvent } from '../hooks/useSSE'
 import { useDebugStore } from '../stores/debug'
+import { useSettings } from '../hooks/useSettings'
 import { Header } from '../features/inbox/Header'
 import { Sidebar } from '../features/inbox/Sidebar'
 import { ToastContainer } from '../components/ToastContainer'
@@ -14,6 +15,7 @@ import styles from './AppLayout.module.css'
 const particles = ['\u273f', '\u22c6', '\u2661', '\u2727', '\u273f', '\u22c6', '\u2661', '\u2727']
 
 export function AppLayout() {
+  useSettings()  // hydrates theme/mode from server on mount
   const queryClient = useQueryClient()
   const [briefingOpen, setBriefingOpen] = useState(false)
 
