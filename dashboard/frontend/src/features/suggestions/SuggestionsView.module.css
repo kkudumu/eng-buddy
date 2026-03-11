@@ -1,0 +1,25 @@
+.container { padding: 1rem; }
+.headerRow { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; }
+.heading { font-family: var(--font-heading, var(--font)); color: var(--text); font-size: 1.2rem; }
+.refresh, .heldToggle {
+  font-family: var(--font-mono); font-size: 0.75rem; padding: 4px 10px;
+  border: 1px solid var(--border-subtle); background: transparent;
+  color: var(--text); cursor: pointer; border-radius: var(--radius-sm, 4px);
+}
+.loading, .empty { color: var(--muted); font-family: var(--font-mono); padding: 2rem; }
+.card {
+  background: var(--card-bg); border: 1px solid var(--border-subtle);
+  border-radius: var(--radius, 8px); padding: 1rem; margin-bottom: 0.75rem;
+}
+.heldCard { opacity: 0.6; }
+.title { font-size: 0.9rem; color: var(--text); font-weight: 500; }
+.summary { font-size: 0.75rem; color: var(--muted); margin-top: 0.25rem; }
+.actions { display: flex; gap: 0.5rem; margin-top: 0.75rem; }
+.approve, .deny {
+  font-family: var(--font-mono); font-size: 0.7rem; padding: 3px 8px;
+  border: 1px solid var(--border-subtle); background: var(--surface);
+  color: var(--text); border-radius: var(--radius-sm, 4px); cursor: pointer;
+}
+.approve:hover { border-color: var(--fresh); }
+.deny:hover { border-color: var(--gmail); }
+.heldSection { margin-top: 1.5rem; }

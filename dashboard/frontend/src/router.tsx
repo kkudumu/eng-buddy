@@ -6,6 +6,8 @@ import { JiraSprintView } from './features/jira/JiraSprintView'
 import { CalendarView } from './features/calendar/CalendarView'
 import { DailyLogView } from './features/daily/DailyLogView'
 import { LearningsView } from './features/learnings/LearningsView'
+import { KnowledgeView } from './features/knowledge/KnowledgeView'
+import { SuggestionsView } from './features/suggestions/SuggestionsView'
 
 const PlaceholderView = ({ name }: { name: string }) => (
   <div style={{ padding: '2rem', color: 'var(--text)', fontFamily: 'var(--font)' }}>
@@ -27,8 +29,8 @@ export const router = createBrowserRouter(
         { path: 'calendar', element: <CalendarView /> },
         { path: 'daily', element: <DailyLogView /> },
         { path: 'learnings', element: <LearningsView /> },
-        { path: 'knowledge', element: <PlaceholderView name="Knowledge" /> },
-        { path: 'suggestions', element: <PlaceholderView name="Suggestions" /> },
+        { path: 'knowledge', element: <KnowledgeView /> },
+        { path: 'suggestions', element: <SuggestionsView /> },
         { path: 'playbooks', element: <PlaceholderView name="Playbooks" /> },
       ],
     },
