@@ -2098,6 +2098,53 @@ async def delete_draft_playbook(playbook_id: str):
     raise HTTPException(status_code=404, detail="Draft not found")
 
 
+@app.patch("/api/playbooks/drafts/{playbook_id}")
+async def update_draft_playbook(playbook_id: str, body: dict = Body(...)):
+    """Update a draft playbook's steps or metadata."""
+    mgr = _get_playbook_manager()
+    pb = mgr.get_draft(playbook_id)
+    if not pb:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    if "name" in body:
+        pb.name = body["name"]
+    if "description" in body:
+        pb.description = body["description"]
+    if "steps" in body:
+        from bin.playbook_engine.models import PlaybookStep
+        pb.steps = [PlaybookStep.from_dict(s) for s in body["steps"]]
+    if "trigger_keywords" in body:
+        pb.trigger_keywords = body["trigger_keywords"]
+    mgr.save_draft(pb)
+    return pb.to_dict()
+
+
+@app.get("/api/playbooks/{playbook_id}/history")
+async def get_playbook_history(playbook_id: str):
+    """Get execution history for a playbook."""
+    db_path = RUNTIME_DIR / "events.db"
+    if not db_path.exists():
+        return {"runs": []}
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        "SELECT * FROM events WHERE event_type = 'playbook_execution' AND json_extract(payload, '$.playbook_id') = ? ORDER BY timestamp DESC LIMIT 50",
+        (playbook_id,),
+    ).fetchall()
+    conn.close()
+    runs = []
+    for row in rows:
+        payload = json.loads(row["payload"]) if isinstance(row["payload"], str) else row["payload"]
+        runs.append({
+            "id": str(row["id"]),
+            "playbook_id": playbook_id,
+            "started_at": row["timestamp"],
+            "finished_at": payload.get("finished_at"),
+            "status": payload.get("status", "unknown"),
+            "steps": payload.get("steps", []),
+        })
+    return {"runs": runs}
+
+
 @app.post("/api/playbooks/match")
 async def match_playbook(body: dict = Body(...)):
     """Match a ticket against known playbooks."""
