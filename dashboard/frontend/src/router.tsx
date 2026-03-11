@@ -8,6 +8,7 @@ import { DailyLogView } from './features/daily/DailyLogView'
 import { LearningsView } from './features/learnings/LearningsView'
 import { KnowledgeView } from './features/knowledge/KnowledgeView'
 import { SuggestionsView } from './features/suggestions/SuggestionsView'
+import { PlaybooksView } from './features/playbooks/PlaybooksView'
 
 const PlaceholderView = ({ name }: { name: string }) => (
   <div style={{ padding: '2rem', color: 'var(--text)', fontFamily: 'var(--font)' }}>
@@ -31,7 +32,7 @@ export const router = createBrowserRouter(
         { path: 'learnings', element: <LearningsView /> },
         { path: 'knowledge', element: <KnowledgeView /> },
         { path: 'suggestions', element: <SuggestionsView /> },
-        { path: 'playbooks', element: <PlaceholderView name="Playbooks" /> },
+        { path: 'playbooks', element: <PlaybooksView /> },
       ],
     },
   ],

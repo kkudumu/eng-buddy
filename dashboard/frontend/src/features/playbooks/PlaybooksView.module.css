@@ -1,0 +1,34 @@
+.container { padding: 1rem; }
+.heading { font-family: var(--font-heading, var(--font)); color: var(--text); font-size: 1.2rem; margin-bottom: 1rem; }
+.subheading { font-family: var(--font-mono); font-size: 0.85rem; color: var(--muted); margin-bottom: 0.75rem; }
+.section { margin-bottom: 2rem; }
+.loading, .empty { color: var(--muted); font-family: var(--font-mono); padding: 2rem; }
+.card {
+  background: var(--card-bg); border: 1px solid var(--border-subtle);
+  border-radius: var(--radius, 8px); padding: 1rem; margin-bottom: 0.75rem;
+}
+.cardHeader { display: flex; justify-content: space-between; align-items: center; }
+.name { font-size: 0.9rem; color: var(--text); font-weight: 600; }
+.confidence { font-family: var(--font-mono); font-size: 0.7rem; color: var(--fresh); }
+.executions { font-family: var(--font-mono); font-size: 0.7rem; color: var(--jira); }
+.trigger { font-family: var(--font-mono); font-size: 0.7rem; color: var(--muted); margin-top: 0.25rem; }
+.steps { margin-top: 0.5rem; }
+.step {
+  display: flex; gap: 0.5rem; align-items: center;
+  font-family: var(--font-mono); font-size: 0.75rem; color: var(--text);
+  padding: 0.2rem 0;
+}
+.stepNum { color: var(--muted); min-width: 20px; }
+.tool { font-size: 0.6rem; color: var(--jira); margin-left: auto; }
+.executeRow { display: flex; gap: 0.5rem; margin-top: 0.75rem; padding-top: 0.5rem; border-top: 1px solid var(--border-faint); }
+.approvalInput {
+  flex: 1; font-family: var(--font-mono); font-size: 0.75rem; padding: 4px 8px;
+  border: 1px solid var(--border-subtle); background: var(--surface); color: var(--text);
+  border-radius: var(--radius-sm, 4px);
+}
+.executeBtn {
+  font-family: var(--font-mono); font-size: 0.75rem; padding: 4px 12px;
+  border: 1px solid var(--fresh); background: transparent; color: var(--fresh);
+  border-radius: var(--radius-sm, 4px); cursor: pointer;
+}
+.executeBtn:hover { background: var(--hover-bg); }
