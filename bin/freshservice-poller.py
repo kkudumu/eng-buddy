@@ -15,29 +15,25 @@ import urllib.request
 from base64 import b64encode
 from datetime import datetime, timezone
 from pathlib import Path
+from poller_runtime import credential, single_instance
 
 BASE_DIR = Path.home() / ".claude" / "eng-buddy"
 STATE_FILE = BASE_DIR / "freshservice-ingestor-state.json"
 HEALTH_FILE = BASE_DIR / "health" / "freshservice.json"
 DB_PATH = BASE_DIR / "inbox.db"
 
-FRESHSERVICE_DOMAIN = "klaviyo.freshservice.com"
-API_KEY = "vh78yaatCXcXaHODpYl"
-AGENT_ID = 15004391041  # kioja.kudumu
-GROUP_ID = 15000745688   # Global IT / Systems
-WORKSPACE_ID = 2         # My Team
+FRESHSERVICE_DOMAIN = os.environ.get("FRESHSERVICE_DOMAIN") or credential("FRESHSERVICE_DOMAIN", "klaviyo")
+if FRESHSERVICE_DOMAIN and not FRESHSERVICE_DOMAIN.endswith(".freshservice.com"):
+    FRESHSERVICE_DOMAIN = f"{FRESHSERVICE_DOMAIN}.freshservice.com"
+API_KEY = os.environ.get("FRESHSERVICE_API_KEY") or credential("FRESHSERVICE_API_KEY")
+AGENT_ID = int(os.environ.get("ENG_BUDDY_FRESHSERVICE_AGENT_ID", "15004391041"))
+GROUP_ID = int(os.environ.get("ENG_BUDDY_FRESHSERVICE_GROUP_ID", "15000745688"))
+WORKSPACE_ID = int(os.environ.get("ENG_BUDDY_FRESHSERVICE_WORKSPACE_ID", "2"))
 
 DASHBOARD_INVALIDATE_URL = os.environ.get(
     "ENG_BUDDY_DASHBOARD_INVALIDATE_URL",
     "http://127.0.0.1:7777/api/cache-invalidate",
 )
-
-# Auth header: API key as username, X as password (basic auth)
-_AUTH = b64encode(f"{API_KEY}:X".encode()).decode()
-_HEADERS = {
-    "Authorization": f"Basic {_AUTH}",
-    "Content-Type": "application/json",
-}
 
 # Status mapping
 STATUS_MAP = {2: "Open", 3: "Pending", 4: "Resolved", 5: "Closed"}
@@ -46,10 +42,19 @@ PRIORITY_MAP = {1: "Low", 2: "Medium", 3: "High", 4: "Urgent"}
 
 def _api_get(path, params=None):
     """Make a GET request to the Freshservice API. Returns parsed JSON."""
+    if not API_KEY or not FRESHSERVICE_DOMAIN:
+        raise RuntimeError("Missing Freshservice credentials")
     url = f"https://{FRESHSERVICE_DOMAIN}{path}"
     if params:
         url += ("&" if "?" in url else "?") + urllib.parse.urlencode(params)
-    req = urllib.request.Request(url, headers=_HEADERS)
+    auth = b64encode(f"{API_KEY}:X".encode()).decode()
+    req = urllib.request.Request(
+        url,
+        headers={
+            "Authorization": f"Basic {auth}",
+            "Content-Type": "application/json",
+        },
+    )
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read())
@@ -134,112 +139,111 @@ def invalidate_dashboard_cache():
 
 
 def main():
-    now = datetime.now(timezone.utc).isoformat()
-    print(f"[{datetime.now()}] Freshservice poller starting...")
-
-    # Fetch both views
     try:
-        v1 = fetch_view1_assigned_unresolved()
-        print(f"  View 1 (Assigned/Unresolved): {len(v1)} tickets")
-    except Exception as e:
-        print(f"  View 1 failed: {e}")
-        v1 = []
+        with single_instance("freshservice-poller"):
+            now = datetime.now(timezone.utc).isoformat()
+            print(f"[{datetime.now()}] Freshservice poller starting...")
 
-    try:
-        v2 = fetch_view2_it_systems_open()
-        print(f"  View 2 (IT-Systems Open): {len(v2)} tickets")
-    except Exception as e:
-        print(f"  View 2 failed: {e}")
-        v2 = []
+            try:
+                v1 = fetch_view1_assigned_unresolved()
+                print(f"  View 1 (Assigned/Unresolved): {len(v1)} tickets")
+            except Exception as e:
+                print(f"  View 1 failed: {e}")
+                v1 = []
 
-    # Deduplicate by ticket ID (a ticket may appear in both views)
-    all_tickets = {}
-    for t in v1:
-        all_tickets[t["id"]] = t
-    for t in v2:
-        all_tickets[t["id"]] = t
+            try:
+                v2 = fetch_view2_it_systems_open()
+                print(f"  View 2 (IT-Systems Open): {len(v2)} tickets")
+            except Exception as e:
+                print(f"  View 2 failed: {e}")
+                v2 = []
 
-    total = len(all_tickets)
-    print(f"  Combined unique tickets: {total}")
+            all_tickets = {}
+            for ticket in v1:
+                all_tickets[ticket["id"]] = ticket
+            for ticket in v2:
+                all_tickets[ticket["id"]] = ticket
 
-    if not all_tickets and not v1 and not v2:
-        print("  No tickets fetched — skipping DB update to avoid wiping on API error.")
-        write_health("error", 0)
-        return
+            total = len(all_tickets)
+            print(f"  Combined unique tickets: {total}")
 
-    conn = sqlite3.connect(DB_PATH)
+            if not all_tickets and not v1 and not v2:
+                print("  No tickets fetched — skipping DB update to avoid wiping on API error.")
+                write_health("error", 0)
+                return
 
-    # Build set of valid summaries for cleanup
-    valid_summaries = set()
-    changed = False
+            conn = sqlite3.connect(DB_PATH)
+            valid_summaries = set()
+            changed = False
 
-    for ticket in all_tickets.values():
-        summary = card_summary(ticket)
-        valid_summaries.add(summary)
-        classification = card_classification(ticket)
-        status_label = STATUS_MAP.get(ticket.get("status"), "Open")
-        priority_label = PRIORITY_MAP.get(ticket.get("priority"), "Medium")
-        url = ticket_url(ticket["id"])
+            for ticket in all_tickets.values():
+                summary = card_summary(ticket)
+                valid_summaries.add(summary)
+                classification = card_classification(ticket)
+                status_label = STATUS_MAP.get(ticket.get("status"), "Open")
+                priority_label = PRIORITY_MAP.get(ticket.get("priority"), "Medium")
+                url = ticket_url(ticket["id"])
 
-        proposed = json.dumps([{
-            "type": "review_freshservice_ticket",
-            "draft": f"Review Freshservice ticket #{ticket['id']}: {ticket.get('subject', '')}",
-            "source": "freshservice",
-            "url": url,
-        }])
+                proposed = json.dumps([{
+                    "type": "review_freshservice_ticket",
+                    "draft": f"Review Freshservice ticket #{ticket['id']}: {ticket.get('subject', '')}",
+                    "source": "freshservice",
+                    "url": url,
+                }])
 
-        metadata = json.dumps({
-            "ticket_id": ticket["id"],
-            "status": status_label,
-            "priority": priority_label,
-            "type": ticket.get("type", ""),
-            "requester_id": ticket.get("requester_id"),
-            "group_id": ticket.get("group_id"),
-            "agent_id": ticket.get("agent_id"),
-            "created_at": ticket.get("created_at"),
-            "updated_at": ticket.get("updated_at"),
-            "url": url,
-        })
+                metadata = json.dumps({
+                    "ticket_id": ticket["id"],
+                    "status": status_label,
+                    "priority": priority_label,
+                    "type": ticket.get("type", ""),
+                    "requester_id": ticket.get("requester_id"),
+                    "group_id": ticket.get("group_id"),
+                    "agent_id": ticket.get("agent_id"),
+                    "created_at": ticket.get("created_at"),
+                    "updated_at": ticket.get("updated_at"),
+                    "url": url,
+                })
 
-        before = conn.total_changes
-        conn.execute(
-            """INSERT INTO cards
-               (source, timestamp, summary, classification, status, section,
-                proposed_actions, analysis_metadata, execution_status)
-               VALUES (?, ?, ?, ?, 'pending', 'needs-action', ?, ?, 'not_run')
-               ON CONFLICT(source, summary) DO UPDATE SET
-                   timestamp=excluded.timestamp,
-                   classification=excluded.classification,
-                   proposed_actions=excluded.proposed_actions,
-                   analysis_metadata=excluded.analysis_metadata""",
-            ("freshservice", now, summary, classification, proposed, metadata),
-        )
-        if conn.total_changes > before:
-            changed = True
+                before = conn.total_changes
+                conn.execute(
+                    """INSERT INTO cards
+                       (source, timestamp, summary, classification, status, section,
+                        proposed_actions, analysis_metadata, execution_status)
+                       VALUES (?, ?, ?, ?, 'pending', 'needs-action', ?, ?, 'not_run')
+                       ON CONFLICT(source, summary) DO UPDATE SET
+                           timestamp=excluded.timestamp,
+                           classification=excluded.classification,
+                           proposed_actions=excluded.proposed_actions,
+                           analysis_metadata=excluded.analysis_metadata""",
+                    ("freshservice", now, summary, classification, proposed, metadata),
+                )
+                if conn.total_changes > before:
+                    changed = True
 
-    # Remove stale cards (tickets no longer in either view)
-    existing = conn.execute(
-        "SELECT id, summary FROM cards WHERE source='freshservice'"
-    ).fetchall()
-    stale_ids = [row[0] for row in existing if row[1] not in valid_summaries]
-    if stale_ids:
-        placeholders = ",".join("?" * len(stale_ids))
-        conn.execute(
-            f"DELETE FROM cards WHERE id IN ({placeholders})", stale_ids
-        )
-        changed = True
-        print(f"  Removed {len(stale_ids)} stale cards")
+            existing = conn.execute(
+                "SELECT id, summary FROM cards WHERE source='freshservice'"
+            ).fetchall()
+            stale_ids = [row[0] for row in existing if row[1] not in valid_summaries]
+            if stale_ids:
+                placeholders = ",".join("?" * len(stale_ids))
+                conn.execute(
+                    f"DELETE FROM cards WHERE id IN ({placeholders})", stale_ids
+                )
+                changed = True
+                print(f"  Removed {len(stale_ids)} stale cards")
 
-    conn.commit()
-    conn.close()
+            conn.commit()
+            conn.close()
 
-    STATE_FILE.write_text(json.dumps({"last_checked": now}))
-    write_health("ok", total)
+            STATE_FILE.write_text(json.dumps({"last_checked": now}))
+            write_health("ok", total)
 
-    if changed:
-        invalidate_dashboard_cache()
+            if changed:
+                invalidate_dashboard_cache()
 
-    print(f"[{datetime.now()}] Done — {total} tickets synced.")
+            print(f"[{datetime.now()}] Done — {total} tickets synced.")
+    except RuntimeError as exc:
+        print(f"[{datetime.now()}] {exc}")
 
 
 if __name__ == "__main__":

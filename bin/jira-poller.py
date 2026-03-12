@@ -1,92 +1,214 @@
 #!/usr/bin/env python3
 """
 eng-buddy Jira Poller
-Fetches Jira issues assigned to current user since last check.
-Writes cards to inbox.db.
+Fetches Jira issues assigned to the configured user via the Jira REST API.
+Writes cards to inbox.db without routing through Claude.
 """
+
+from __future__ import annotations
+
 import json
-import re
+import os
 import sqlite3
-import subprocess
+import urllib.error
+import urllib.parse
+import urllib.request
+from base64 import b64encode
 from datetime import datetime, timezone
 from pathlib import Path
+
+from poller_runtime import credential, single_instance
 
 BASE_DIR = Path.home() / ".claude" / "eng-buddy"
 STATE_FILE = BASE_DIR / "jira-ingestor-state.json"
 DB_PATH = BASE_DIR / "inbox.db"
-JIRA_USER = "kioja.kudumu@klaviyo.com"
-JIRA_BOARD_NAME = "Systems"
-JIRA_PROJECT_KEY = "ITWORK2"
 
-def get_last_checked():
-    try:
-        state = json.loads(STATE_FILE.read_text())
-        return state.get("last_checked", "2020-01-01T00:00:00Z")
-    except Exception:
-        return "2020-01-01T00:00:00Z"
+JIRA_USER = os.environ.get("ENG_BUDDY_JIRA_USER") or credential("JIRA_EMAIL")
+JIRA_BOARD_NAME = os.environ.get("ENG_BUDDY_JIRA_BOARD_NAME", "Systems")
+JIRA_PROJECT_KEY = os.environ.get("ENG_BUDDY_JIRA_PROJECT_KEY", "ITWORK2")
+JIRA_BASE_URL = credential("JIRA_BASE_URL").rstrip("/")
+JIRA_API_TOKEN = credential("JIRA_API_TOKEN")
 
-def set_last_checked(ts):
+
+def set_last_checked(ts: str):
     STATE_FILE.write_text(json.dumps({"last_checked": ts}))
 
-def fetch_jira_issues():
-    """Use claude --print to call Atlassian MCP and get assigned issues."""
-    prompt = (
-        "Use the Atlassian MCP tools to find my current sprint tasks:\n"
-        f"1. Call jira_get_agile_boards with board_name='{JIRA_BOARD_NAME}' and project_key='{JIRA_PROJECT_KEY}'.\n"
-        f"2. Choose the board that best matches project '{JIRA_PROJECT_KEY}' and the Systems sprint workflow.\n"
-        "3. Call jira_get_sprints_from_board with that board's ID, state='active'.\n"
-        f"4. If multiple active sprints exist, prefer the sprint whose name contains '{JIRA_PROJECT_KEY}' or starts with 'SYSTEMS'.\n"
-        f"5. Call jira_search with JQL: assignee = \"{JIRA_USER}\" "
-        f"AND project = {JIRA_PROJECT_KEY} AND sprint = <sprint_id> ORDER BY priority DESC, status ASC\n"
-        "Fields: summary,status,priority,issuetype,labels,updated. Limit: 30.\n"
-        "Return ONLY a JSON array of objects with keys: "
-        "key, summary, status, priority, updated, url. "
-        "No prose, just the JSON array. Empty array [] if no issues found."
-    )
-    result = subprocess.run(
-        ["claude", "--dangerously-skip-permissions", "--print", prompt],
-        capture_output=True, text=True, timeout=60
-    )
-    output = result.stdout.strip()
-    # Extract JSON array from output
-    match = re.search(r'\[.*\]', output, re.DOTALL)
-    if match:
-        return json.loads(match.group(0))
-    return []
 
-def write_card(conn, issue):
-    jira_key = issue.get('key', '')
-    summary = f"{jira_key} — {issue.get('summary', '')}"
-    proposed = json.dumps([{
-        "type": "review_jira_issue",
-        "draft": f"Review and update Jira issue {jira_key}: {issue.get('summary')}",
-        "source": "jira",
-        "url": issue.get("url", "")
-    }])
-    # UNIQUE(source, summary) index prevents duplicates via INSERT OR IGNORE
-    conn.execute(
-        """INSERT OR IGNORE INTO cards
-           (source, timestamp, summary, classification, status, proposed_actions, execution_status)
-           VALUES (?, ?, ?, ?, 'pending', ?, 'not_run')""",
-        ("jira", datetime.now(timezone.utc).isoformat(),
-         summary,
-         issue.get("priority", "needs-response").lower(),
-         proposed)
+def _jira_get(path: str, params: dict[str, str] | None = None) -> dict:
+    if not JIRA_BASE_URL or not JIRA_USER or not JIRA_API_TOKEN:
+        raise RuntimeError("Missing Jira credentials")
+
+    query = ""
+    if params:
+        query = "?" + urllib.parse.urlencode(params)
+
+    token = b64encode(f"{JIRA_USER}:{JIRA_API_TOKEN}".encode("utf-8")).decode("ascii")
+    request = urllib.request.Request(
+        f"{JIRA_BASE_URL}{path}{query}",
+        headers={
+            "Authorization": f"Basic {token}",
+            "Accept": "application/json",
+        },
     )
+    with urllib.request.urlopen(request, timeout=30) as response:
+        return json.loads(response.read())
+
+
+def _pick_board(boards: list[dict]) -> dict | None:
+    if not boards:
+        return None
+
+    preferred = []
+    fallback = []
+    target_name = JIRA_BOARD_NAME.lower()
+    target_project = JIRA_PROJECT_KEY.lower()
+    for board in boards:
+        name = str(board.get("name") or "").lower()
+        location = board.get("location") or {}
+        location_name = str(location.get("name") or "").lower()
+        if target_name in name and target_project in location_name:
+            preferred.append(board)
+        elif target_name in name:
+            preferred.append(board)
+        else:
+            fallback.append(board)
+    return (preferred or fallback or [None])[0]
+
+
+def _pick_active_sprint(sprints: list[dict]) -> dict | None:
+    if not sprints:
+        return None
+
+    preferred = []
+    fallback = []
+    for sprint in sprints:
+        if str(sprint.get("state") or "").lower() != "active":
+            continue
+        name = str(sprint.get("name") or "").upper()
+        if JIRA_PROJECT_KEY.upper() in name or name.startswith("SYSTEMS"):
+            preferred.append(sprint)
+        else:
+            fallback.append(sprint)
+    return (preferred or fallback or [None])[0]
+
+
+def _issue_url(issue_key: str) -> str:
+    return f"{JIRA_BASE_URL}/browse/{issue_key}" if issue_key else ""
+
+
+def fetch_jira_issues() -> list[dict]:
+    if not JIRA_BASE_URL or not JIRA_USER or not JIRA_API_TOKEN:
+        print(f"[{datetime.now()}] Jira credentials missing, skipping sync.")
+        return []
+
+    board_payload = _jira_get(
+        "/rest/agile/1.0/board",
+        {"projectKeyOrId": JIRA_PROJECT_KEY, "maxResults": "50"},
+    )
+    board = _pick_board(board_payload.get("values", []))
+
+    sprint = None
+    if board and board.get("id"):
+        sprint_payload = _jira_get(
+            f"/rest/agile/1.0/board/{board['id']}/sprint",
+            {"state": "active", "maxResults": "20"},
+        )
+        sprint = _pick_active_sprint(sprint_payload.get("values", []))
+
+    if sprint and sprint.get("id"):
+        jql = (
+            f'assignee = "{JIRA_USER}" AND project = {JIRA_PROJECT_KEY} '
+            f'AND sprint = {sprint["id"]} ORDER BY priority DESC, status ASC'
+        )
+    else:
+        jql = (
+            f'assignee = "{JIRA_USER}" AND project = {JIRA_PROJECT_KEY} '
+            "AND statusCategory != Done ORDER BY priority DESC, status ASC"
+        )
+
+    payload = _jira_get(
+        "/rest/api/3/search",
+        {
+            "jql": jql,
+            "fields": "summary,status,priority,issuetype,labels,updated",
+            "maxResults": "30",
+        },
+    )
+
+    issues = []
+    for issue in payload.get("issues", []):
+        fields = issue.get("fields") or {}
+        issues.append(
+            {
+                "key": issue.get("key", ""),
+                "summary": fields.get("summary", ""),
+                "status": (fields.get("status") or {}).get("name", ""),
+                "priority": ((fields.get("priority") or {}).get("name") or "needs-response"),
+                "updated": fields.get("updated", ""),
+                "url": _issue_url(issue.get("key", "")),
+            }
+        )
+    return issues
+
+
+def write_card(conn: sqlite3.Connection, issue: dict):
+    jira_key = issue.get("key", "")
+    summary = f"{jira_key} — {issue.get('summary', '')}".strip()
+    proposed = json.dumps(
+        [
+            {
+                "type": "review_jira_issue",
+                "draft": f"Review and update Jira issue {jira_key}: {issue.get('summary', '')}",
+                "source": "jira",
+                "url": issue.get("url", ""),
+            }
+        ]
+    )
+    conn.execute(
+        """INSERT INTO cards
+           (source, timestamp, summary, classification, status, proposed_actions, execution_status)
+           VALUES (?, ?, ?, ?, 'pending', ?, 'not_run')
+           ON CONFLICT(source, summary) DO UPDATE SET
+               timestamp=excluded.timestamp,
+               classification=excluded.classification,
+               proposed_actions=excluded.proposed_actions,
+               execution_status='not_run'""",
+        (
+            "jira",
+            datetime.now(timezone.utc).isoformat(),
+            summary,
+            str(issue.get("priority") or "needs-response").lower(),
+            proposed,
+        ),
+    )
+
 
 def main():
-    issues = fetch_jira_issues()
-    if not issues:
-        print(f"[{datetime.now()}] No Jira issues found.")
-        return
+    try:
+        with single_instance("jira-poller"):
+            issues = fetch_jira_issues()
+            if not issues:
+                print(f"[{datetime.now()}] No Jira issues found.")
+                return
 
-    conn = sqlite3.connect(DB_PATH)
-    for issue in issues:
-        write_card(conn, issue)
-    conn.commit()
-    conn.close()
-    set_last_checked(datetime.now(timezone.utc).isoformat())
-    print(f"[{datetime.now()}] Processed {len(issues)} Jira issues.")
+            conn = sqlite3.connect(DB_PATH)
+            try:
+                for issue in issues:
+                    write_card(conn, issue)
+                conn.commit()
+            finally:
+                conn.close()
+
+            set_last_checked(datetime.now(timezone.utc).isoformat())
+            print(f"[{datetime.now()}] Processed {len(issues)} Jira issues.")
+    except RuntimeError as exc:
+        print(f"[{datetime.now()}] {exc}")
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")[:300]
+        print(f"[{datetime.now()}] Jira API error {exc.code}: {body}")
+    except Exception as exc:
+        print(f"[{datetime.now()}] Jira poller failed: {exc}")
+
 
 if __name__ == "__main__":
     main()

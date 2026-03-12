@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
 """
 eng-buddy Slack Poller
-Fetches recent Slack messages via Claude CLI + Slack MCP.
-Classifies messages with Claude CLI, writes to inbox.db, and appends to
-today's daily log.
+Fetches recent Slack messages directly via the Slack API, writes to inbox.db,
+and appends to today's daily log without background model calls.
 """
 
 import json
 import os
 import re
-import sys
 import sqlite3
 import subprocess
 import time
@@ -18,15 +16,13 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, date, timezone
 from pathlib import Path
-
-# Ensure brain.py is importable from same directory
-sys.path.insert(0, str(Path(__file__).parent))
-import brain
+from poller_runtime import single_instance
 
 BASE_DIR = Path.home() / ".claude" / "eng-buddy"
 STATE_FILE = BASE_DIR / "slack-poller-state.json"
 DB_PATH = BASE_DIR / "inbox.db"
 SETTINGS_FILE = BASE_DIR / "dashboard-settings.json"
+WATCHED_THREADS_FILE = BASE_DIR / "watched-threads.json"
 LOOKBACK_DAYS = 3
 EXCLUDED_CHANNELS = {"critical-broadcast"}
 BROADCAST_MARKERS = {"<!here>", "<!channel>", "<!everyone>", "@here", "@channel", "@everyone"}
@@ -709,194 +705,116 @@ def write_to_inbox_db(item):
 
 
 # ---------------------------------------------------------------------------
-# Contextual draft generation via Claude CLI
+# Watched threads registry
 # ---------------------------------------------------------------------------
 
-def _generate_contextual_drafts(needs_action_items):
-    """
-    Batch-generate contextual draft responses for needs-action Slack items
-    using a single Claude CLI call with brain context.
-    Returns the items list with draft_response fields populated.
-    """
-    if not needs_action_items:
-        return needs_action_items
+def load_watched_threads():
+    """Load watched threads from file. Returns list of dicts with channel_id, thread_ts, label."""
+    if not WATCHED_THREADS_FILE.exists():
+        return []
+    try:
+        return json.loads(WATCHED_THREADS_FILE.read_text())
+    except Exception:
+        return []
 
-    # Also fetch recent thread context for each item to give Claude more signal
+
+def save_watched_threads(threads):
+    WATCHED_THREADS_FILE.write_text(json.dumps(threads, indent=2))
+
+
+def register_watched_thread(channel_id, thread_ts, label=""):
+    """Add a thread to the watch registry. Idempotent."""
+    threads = load_watched_threads()
+    for t in threads:
+        if t.get("channel_id") == channel_id and t.get("thread_ts") == thread_ts:
+            return  # already watching
+    threads.append({
+        "channel_id": channel_id,
+        "thread_ts": thread_ts,
+        "label": label,
+        "added": datetime.now(timezone.utc).isoformat(),
+    })
+    save_watched_threads(threads)
+    print(f"Watching thread {thread_ts} in {channel_id} ({label})")
+
+
+def fetch_watched_thread_replies(days=LOOKBACK_DAYS):
+    """
+    Poll all watched threads directly via conversations.replies,
+    regardless of channel membership. Returns normalized items.
+    """
+    watched = load_watched_threads()
+    if not watched:
+        return []
+
     token, _ = _load_slack_token_config()
-    items_with_context = []
-    for idx, item in enumerate(needs_action_items):
-        thread_context = ""
-        if token and item.get("channel_id") and item.get("thread_ts"):
-            try:
-                oldest_for_thread = str(time.time() - LOOKBACK_DAYS * 24 * 3600)
-                replies = _fetch_thread_replies(
-                    token, item["channel_id"], item["thread_ts"], oldest_for_thread
-                )
-                # Get last 10 messages for context
-                recent = replies[-10:] if len(replies) > 10 else replies
-                thread_lines = []
-                for r in recent:
-                    sender = r.get("user", "unknown")
-                    text = _clean_text(r.get("text", ""))[:300]
-                    if text:
-                        thread_lines.append(f"  {sender}: {text}")
-                if thread_lines:
-                    thread_context = "\n".join(thread_lines)
-            except Exception:
-                pass
-        items_with_context.append({
-            "index": idx,
-            "sender": item.get("sender", "unknown"),
-            "channel": item.get("channel", "unknown"),
-            "text": item.get("text", "")[:400],
-            "context_notes": item.get("context_notes", ""),
-            "thread_context": thread_context,
-        })
-
-    context = brain.build_context_prompt(needs_action_items)
-    items_json = json.dumps(items_with_context, indent=2)
-
-    prompt = f"""{context}
-
-I need you to draft contextual Slack responses for messages that need my attention.
-Read the conversation context carefully and draft a response that:
-- Addresses what the person is actually asking/saying
-- Uses the thread context to understand the full conversation
-- Is concise and natural (how a real person would reply on Slack)
-- Matches my response tone from the context above
-- References specific details from the conversation when relevant
-
-Messages needing drafts:
-{items_json}
-
-Return ONLY a JSON array where each element has:
-- "index": the message index number
-- "draft": your suggested response (1-3 sentences, Slack-appropriate)
-
-Example: [{{"index": 0, "draft": "Good question — I'd recommend keeping the invite-only approach for now since we're still rolling out the Okta integration. Once SSO is fully live we can revisit."}}]
-
-No prose, just the JSON array."""
+    if not token:
+        return []
 
     try:
-        # Clear CLAUDECODE env var to avoid nested-session detection when
-        # the poller is tested from inside a Claude Code session.
-        clean_env = {k: v for k, v in os.environ.items() if not k.startswith("CLAUDECODE")}
-        result = subprocess.run(
-            ["claude", "--dangerously-skip-permissions", "--print", prompt],
-            capture_output=True, text=True, timeout=90,
-            env=clean_env,
-        )
-        if result.returncode != 0:
-            print(f"Draft generation CLI error: {result.stderr[:200]}")
-            return needs_action_items
-
-        output = result.stdout.strip()
-
-        # Parse learning from Claude output
-        try:
-            brain.parse_learning(output)
-        except Exception:
-            pass
-
-        # Extract JSON array
-        json_match = re.search(r"\[\s*\{.*\}\s*\]", output, re.DOTALL)
-        if json_match:
-            drafts = json.loads(json_match.group(0))
-        elif re.search(r"\[\s*\]", output):
-            drafts = []
-        else:
-            drafts = json.loads(output)
-
-        # Apply drafts back to items
-        draft_map = {d["index"]: d["draft"] for d in drafts if "index" in d and "draft" in d}
-        for idx, item in enumerate(needs_action_items):
-            if idx in draft_map:
-                item["draft_response"] = draft_map[idx]
-
-    except subprocess.TimeoutExpired:
-        print("Draft generation timed out (non-fatal)")
-    except (json.JSONDecodeError, Exception) as e:
-        print(f"Draft generation error (non-fatal): {e}")
-
-    return needs_action_items
-
-
-# ---------------------------------------------------------------------------
-# Fetch + classify via Claude CLI + Slack MCP
-# ---------------------------------------------------------------------------
-
-def fetch_and_classify():
-    """
-    Single Claude CLI call that uses Slack MCP to fetch recent messages
-    and classify them with brain context.
-    """
-    context = brain.build_context_prompt()
-
-    prompt = f"""{context}
-
-You have access to the Slack MCP tools. Do the following:
-
-1. Call slack_list_channels to get all channels (include DMs/group DMs).
-2. For channels with recent activity, call slack_get_channel_history (limit 15 messages per channel, check at most 10 channels) to find messages from the last 24 hours.
-3. Identify messages that need my attention:
-   - Direct messages to me
-   - Messages that @mention me
-   - @here/@channel mentions
-   - New replies in threads I participated in
-   - Skip messages I sent myself
-
-4. For each relevant message, classify it:
-   - section: "needs-action" or "no-action"
-   - classification: "needs-response", "fyi", "responded", "noise"
-   - draft_response: For needs-action items, draft a context-aware reply. null for no-action.
-   - context_notes: Brief context about why this needs action. null if obvious.
-
-Return ONLY a JSON array of objects with these keys:
-sender, channel, channel_id, text (first 400 chars), thread_ts, timestamp, section, classification, draft_response, context_notes, responded (boolean)
-
-Do not omit keys. Use empty strings for unknown string fields and false for responded when unsure.
-
-If there are no relevant messages, return an empty array: []
-No prose, just the JSON array."""
-
-    try:
-        result = subprocess.run(
-            ["claude", "--dangerously-skip-permissions", "--print", prompt],
-            capture_output=True, text=True, timeout=120
-        )
-        if result.returncode != 0:
-            print(f"Claude CLI error: {result.stderr[:200]}")
-            return []
-
-        output = result.stdout.strip()
-
-        # Parse learning from Claude output
-        try:
-            brain.parse_learning(output)
-        except Exception as e:
-            print(f"brain.parse_learning error (non-fatal): {e}")
-
-        # Extract JSON array
-        json_match = re.search(r"\[\s*\{.*\}\s*\]", output, re.DOTALL)
-        if json_match:
-            return json.loads(json_match.group(0))
-
-        # Check for empty array
-        if re.search(r"\[\s*\]", output):
-            return []
-
-        # Try direct parse
-        return json.loads(output)
-
-    except subprocess.TimeoutExpired:
-        print("Claude CLI timed out (non-fatal)")
-        return []
-    except json.JSONDecodeError as e:
-        print(f"JSON parse error (non-fatal): {e}")
-        return []
+        me = _slack_api("auth.test", token).get("user_id", "")
     except Exception as e:
-        print(f"fetch_and_classify error (non-fatal): {e}")
+        print(f"Watched thread auth failed: {e}")
         return []
+
+    oldest = str(time.time() - days * 24 * 3600)
+    oldest_float = float(oldest)
+    user_cache = {}
+    items = {}
+
+    def user_name(user_id):
+        if not user_id:
+            return user_id
+        if user_id not in user_cache:
+            try:
+                user_cache[user_id] = _slack_api("users.info", token, {"user": user_id}).get("user", {})
+                time.sleep(0.05)
+            except Exception:
+                user_cache[user_id] = {}
+        profile = user_cache[user_id]
+        pdata = profile.get("profile", {})
+        return pdata.get("real_name") or pdata.get("display_name") or profile.get("name") or user_id
+
+    for watched_thread in watched:
+        channel_id = watched_thread.get("channel_id", "")
+        thread_ts = watched_thread.get("thread_ts", "")
+        label = watched_thread.get("label", channel_id)
+        if not channel_id or not thread_ts:
+            continue
+
+        try:
+            replies = _fetch_thread_replies(token, channel_id, thread_ts, oldest)
+        except Exception as e:
+            print(f"Watched thread fetch failed for {channel_id}:{thread_ts}: {e}")
+            continue
+
+        replies = [r for r in replies if r.get("type") == "message" and _clean_text(r.get("text")) and r.get("user") != me]
+        for reply in replies:
+            reply_ts = float(reply.get("ts", "0") or 0)
+            if reply_ts < oldest_float:
+                continue
+            sender = user_name(reply.get("user", ""))
+            reply_text = _clean_text(reply.get("text", ""))[:400]
+            responded = _has_later_self_message(replies, me, reply_ts, thread_ts=thread_ts)
+            section, classification, draft_response = _classify_participation_item(reply_text, responded)
+            _record_candidate(
+                items,
+                {
+                    "sender": sender,
+                    "channel": label,
+                    "channel_id": channel_id,
+                    "text": reply_text,
+                    "thread_ts": thread_ts,
+                    "timestamp": datetime.fromtimestamp(reply_ts, timezone.utc).isoformat(),
+                    "section": section,
+                    "classification": classification,
+                    "draft_response": draft_response,
+                    "context_notes": f"Reply in watched thread: {label}",
+                    "responded": responded,
+                },
+            )
+
+    return list(items.values())
 
 
 # ---------------------------------------------------------------------------
@@ -904,85 +822,71 @@ No prose, just the JSON array."""
 # ---------------------------------------------------------------------------
 
 def main():
-    state = load_state()
-    now = datetime.now()
+    try:
+        with single_instance("slack-poller"):
+            state = load_state()
+            now = datetime.now()
 
-    print(f"[{now.strftime('%H:%M')}] Fetching Slack participation from the last {LOOKBACK_DAYS} day(s)...")
-    messages = fetch_recent_participation_items(days=LOOKBACK_DAYS)
-    skipped_count = 0
+            print(f"[{now.strftime('%H:%M')}] Fetching Slack participation from the last {LOOKBACK_DAYS} day(s)...")
+            messages = fetch_recent_participation_items(days=LOOKBACK_DAYS)
 
-    if not messages:
-        print(f"[{now.strftime('%H:%M')}] Direct Slack retrieval found nothing, trying MCP fallback...")
-        raw_messages = fetch_and_classify()
-        messages = []
-        for item in raw_messages:
-            normalized = normalize_slack_item(item)
-            if not normalized:
-                skipped_count += 1
-                print(f"[{now.strftime('%H:%M')}] Skipping malformed Slack item: {json.dumps(item)[:300]}")
-                continue
-            messages.append(normalized)
+            watched_replies = fetch_watched_thread_replies(days=LOOKBACK_DAYS)
+            if watched_replies:
+                print(f"[{now.strftime('%H:%M')}] Found {len(watched_replies)} reply/replies in watched thread(s)")
+                seen_keys = {(m.get("channel_id"), m.get("thread_ts"), m.get("timestamp"), m.get("text")) for m in messages}
+                for item in watched_replies:
+                    key = (item.get("channel_id"), item.get("thread_ts"), item.get("timestamp"), item.get("text"))
+                    if key not in seen_keys:
+                        messages.append(item)
+                        seen_keys.add(key)
 
-    if not messages:
-        print(f"[{now.strftime('%H:%M')}] No new messages needing attention")
-        state["last_check"] = str(now.timestamp())
-        save_state(state)
-        return
+            if not messages:
+                print(f"[{now.strftime('%H:%M')}] No new messages needing attention")
+                state["last_check"] = str(now.timestamp())
+                save_state(state)
+                return
 
-    print(f"[{now.strftime('%H:%M')}] Processing {len(messages)} message(s)...")
-    if skipped_count:
-        print(f"[{now.strftime('%H:%M')}] Skipped {skipped_count} malformed Slack item(s)")
+            print(f"[{now.strftime('%H:%M')}] Processing {len(messages)} message(s)...")
 
-    # Generate contextual drafts for needs-action items before DB write
-    pending_action = [m for m in messages if m.get("section") == "needs-action" and not m.get("responded") and not m.get("draft_response")]
-    if pending_action:
-        print(f"[{now.strftime('%H:%M')}] Generating contextual drafts for {len(pending_action)} item(s)...")
-        _generate_contextual_drafts(pending_action)
-        drafted = sum(1 for m in pending_action if m.get("draft_response"))
-        print(f"[{now.strftime('%H:%M')}] Generated {drafted}/{len(pending_action)} contextual draft(s)")
+            needs_action_items = []
+            dashboard_changed = False
 
-    # Write to inbox.db + collect needs-action for notification
-    needs_action_items = []
-    dashboard_changed = False
+            for item in messages:
+                if write_to_inbox_db(item):
+                    dashboard_changed = True
+                if item.get("section") == "needs-action" and not item.get("responded"):
+                    needs_action_items.append(item)
 
-    for item in messages:
-        if write_to_inbox_db(item):
-            dashboard_changed = True
-        if item.get("section") == "needs-action" and not item.get("responded"):
-            needs_action_items.append(item)
+            check_time = now.strftime("%H:%M")
+            lines = [f"\n### Polled at {check_time} — {len(messages)} new\n"]
+            for item in messages:
+                responded_tag = " [responded]" if item.get("responded") else ""
+                lines.append(
+                    f"- **{item.get('channel', '?')}**{responded_tag} "
+                    f"**{item.get('sender', '?')}**: {item.get('text', '')[:200]}\n"
+                )
+            append_to_daily_log("".join(lines))
+            print(f"[{now.strftime('%H:%M')}] Logged {len(messages)} message(s) to daily log")
 
-    # Write to daily log
-    check_time = now.strftime("%H:%M")
-    lines = [f"\n### Polled at {check_time} — {len(messages)} new\n"]
-    for item in messages:
-        flag = ""
-        responded_tag = " [responded]" if item.get("responded") else ""
-        lines.append(
-            f"- **{item.get('channel', '?')}**{flag}{responded_tag} "
-            f"**{item.get('sender', '?')}**: {item.get('text', '')[:200]}\n"
-        )
-    append_to_daily_log("".join(lines))
-    print(f"[{now.strftime('%H:%M')}] Logged {len(messages)} message(s) to daily log")
+            for item in needs_action_items:
+                preview = (item.get("text", ""))[:80]
+                notify(
+                    title=f"eng-buddy: {item.get('classification', 'message')} from {item.get('sender', '?')}",
+                    message=f"{item.get('channel', '')}\n{preview}",
+                )
 
-    # Notify for needs-action items
-    for item in needs_action_items:
-        preview = (item.get("draft_response") or item.get("text", ""))[:80]
-        notify(
-            title=f"eng-buddy: {item.get('classification', 'message')} from {item.get('sender', '?')}",
-            message=f"{item.get('channel', '')}\n{preview}",
-        )
+            print(
+                f"[{now.strftime('%H:%M')}] "
+                f"{len(needs_action_items)} needs-action item(s) written to inbox.db"
+            )
 
-    print(
-        f"[{now.strftime('%H:%M')}] "
-        f"{len(needs_action_items)} needs-action item(s) written to inbox.db"
-    )
+            state["last_check"] = str(now.timestamp())
+            save_state(state)
 
-    # Persist state
-    state["last_check"] = str(now.timestamp())
-    save_state(state)
-
-    if dashboard_changed:
-        invalidate_dashboard_cache("slack")
+            if dashboard_changed:
+                invalidate_dashboard_cache("slack")
+    except RuntimeError as exc:
+        print(f"[{datetime.now().strftime('%H:%M')}] {exc}")
 
 
 if __name__ == "__main__":

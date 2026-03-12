@@ -2,17 +2,15 @@
 """
 eng-buddy Gmail Poller (smart rewrite)
 Scans ALL inbox emails from last 3 days via Gmail OAuth.
-Claude CLI classifies each email: action-needed, alert, or noise.
-Writes classified cards to inbox.db with draft responses and context notes.
+Uses heuristic classification only in the background.
+Writes classified cards to inbox.db with context notes.
 Tracks ignored senders for adaptive filter suggestions.
-Injects brain context and parses learning from Claude responses.
 """
 
 import json
 import os
 import re
 import sqlite3
-import sys
 import time
 import subprocess
 from datetime import datetime, date, timezone
@@ -21,10 +19,7 @@ from email.utils import parseaddr
 import urllib.request
 import urllib.parse
 import urllib.error
-
-# --- brain import ---
-sys.path.insert(0, str(Path(__file__).parent))
-import brain
+from poller_runtime import single_instance
 
 # --- Config ---
 CREDS_FILE = Path.home() / ".gmail-mcp" / "credentials.json"
@@ -456,78 +451,131 @@ def sweep_responded_cards(token):
 
 
 # ---------------------------------------------------------------------------
-# Claude CLI classification
+# Heuristic classification
 # ---------------------------------------------------------------------------
 
-def classify_with_claude(batch_items):
-    """
-    Send batch_items to Claude CLI for classification.
-    Returns list of dicts: {id, section, classification, draft_response, context_notes}
-    Falls back to empty list on any error.
-    """
-    if not batch_items:
-        return []
-
-    context_prompt = brain.build_context_prompt(batch_items)
-
-    prompt = f"""{context_prompt}
-
-Classify each email below as:
-- section: "action-needed", "alert", or "noise"
-- classification: more specific label (e.g., "needs-response", "offboarding-fyi", "security-alert", "marketing-spam")
-- draft_response: For action-needed emails that need a reply, draft one. null otherwise.
-- context_notes: Brief context. For alerts, a one-line summary. null for noise.
-
-Emails:
-{json.dumps(batch_items, indent=2)}
-
-Return ONLY a JSON array. No prose."""
-
-    try:
-        result = subprocess.run(
-            ["claude", "--dangerously-skip-permissions", "--print", prompt],
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
-        output = result.stdout.strip()
-
-        # Parse learning sections from the full response before extracting JSON
-        brain.parse_learning(output)
-
-        # Extract the JSON array — Claude should return only JSON, but strip any
-        # markdown fences or surrounding text just in case.
-        json_match = re.search(r"\[.*\]", output, re.DOTALL)
-        if json_match:
-            return json.loads(json_match.group(0))
-
-        print(f"[{datetime.now().strftime('%H:%M')}] Claude returned no parseable JSON array")
-        return []
-
-    except subprocess.TimeoutExpired:
-        print(f"[{datetime.now().strftime('%H:%M')}] Claude CLI timed out during classification")
-        return []
-    except (json.JSONDecodeError, ValueError) as exc:
-        print(f"[{datetime.now().strftime('%H:%M')}] JSON parse error from Claude: {exc}")
-        return []
-    except Exception as exc:
-        print(f"[{datetime.now().strftime('%H:%M')}] Claude CLI error: {exc}")
-        return []
+NOISE_LABELS = {"CATEGORY_PROMOTIONS", "CATEGORY_SOCIAL", "CATEGORY_FORUMS"}
+NO_REPLY_MARKERS = {
+    "noreply",
+    "no-reply",
+    "donotreply",
+    "do-not-reply",
+    "mailer-daemon",
+}
+NOISE_KEYWORDS = {
+    "unsubscribe",
+    "view in browser",
+    "marketing",
+    "newsletter",
+    "digest",
+    "promotional",
+    "sale",
+    "webinar",
+    "sponsored",
+}
+ALERT_KEYWORDS = {
+    "alert",
+    "security",
+    "incident",
+    "outage",
+    "degraded",
+    "failure",
+    "failed",
+    "sev",
+    "urgent",
+    "immediately",
+    "verification code",
+    "mfa",
+    "2fa",
+    "pagerduty",
+    "datadog",
+}
+ACTION_KEYWORDS = {
+    "can you",
+    "could you",
+    "please review",
+    "please respond",
+    "let me know",
+    "when you have a chance",
+    "need your",
+    "need you",
+    "would you",
+    "approve",
+    "review",
+    "follow up",
+}
 
 
-def build_classification_map(results, batch_items):
-    """
-    Map Claude results back to batch items by index or by id field.
-    Returns dict keyed by msg_id.
-    """
+def _sender_is_no_reply(sender_email: str) -> bool:
+    lowered = (sender_email or "").lower()
+    return any(marker in lowered for marker in NO_REPLY_MARKERS)
+
+
+def _classify_item_heuristically(item):
+    labels = set(item.get("labels") or [])
+    sender_email = (item.get("sender_email") or "").lower()
+    subject = (item.get("subject") or "").strip()
+    from_value = (item.get("from") or "").strip()
+    snippet = (item.get("snippet") or "").strip()
+    text = " ".join(part for part in [subject.lower(), snippet.lower(), from_value.lower()] if part)
+
+    if labels & NOISE_LABELS:
+        return {
+            "id": item.get("id"),
+            "section": "noise",
+            "classification": "category-noise",
+            "draft_response": None,
+            "context_notes": "Auto-filed from Gmail category labels.",
+        }
+
+    if _sender_is_no_reply(sender_email) and any(keyword in text for keyword in NOISE_KEYWORDS):
+        return {
+            "id": item.get("id"),
+            "section": "noise",
+            "classification": "marketing-spam",
+            "draft_response": None,
+            "context_notes": "Automated or marketing email with low reply likelihood.",
+        }
+
+    if any(keyword in text for keyword in ALERT_KEYWORDS):
+        return {
+            "id": item.get("id"),
+            "section": "alert",
+            "classification": "operational-alert",
+            "draft_response": None,
+            "context_notes": snippet[:160] or "Automated alert or urgent system notice.",
+        }
+
+    addressed_to_me = USER_EMAIL.lower() in (item.get("to") or "").lower()
+    is_reply_thread = subject.lower().startswith(("re:", "fw:", "fwd:"))
+    if "?" in text or addressed_to_me or is_reply_thread or any(keyword in text for keyword in ACTION_KEYWORDS):
+        return {
+            "id": item.get("id"),
+            "section": "action-needed",
+            "classification": "needs-response",
+            "draft_response": None,
+            "context_notes": snippet[:160] or "Looks like a message that may require a reply.",
+        }
+
+    return {
+        "id": item.get("id"),
+        "section": "noise",
+        "classification": "fyi",
+        "draft_response": None,
+        "context_notes": snippet[:160] or "Collected for visibility without background AI.",
+    }
+
+
+def classify_batch(batch_items):
+    return [_classify_item_heuristically(item) for item in batch_items]
+
+
+def build_classification_map(results, _batch_items):
     id_map = {}
-    for i, res in enumerate(results):
-        # Claude may return an 'id' field or results in order
-        msg_id = res.get("id")
-        if not msg_id and i < len(batch_items):
-            msg_id = batch_items[i].get("id")
+    for result in results:
+        msg_id = result.get("id")
         if msg_id:
-            id_map[msg_id] = res
+            id_map[msg_id] = result
     return id_map
 
 
@@ -536,191 +584,191 @@ def build_classification_map(results, batch_items):
 # ---------------------------------------------------------------------------
 
 def main():
-    state        = load_state()
-    token        = get_token()
-    refresh_now  = "--refresh-now" in sys.argv[1:]
-    already_seen = set() if refresh_now else set(state.get("seen_msg_ids", []))
-    processed_seen = set()
+    try:
+        with single_instance("gmail-poller"):
+            state = load_state()
+            token = get_token()
+            refresh_now = "--refresh-now" in sys.argv[1:]
+            already_seen = set() if refresh_now else set(state.get("seen_msg_ids", []))
+            processed_seen = set()
 
-    # Scan inbox emails from the last 3 days.
-    query = "in:inbox newer_than:3d"
-    result = gmail_get("messages", {"q": query, "maxResults": 50}, token=token)
-    messages = result.get("messages", [])
+            query = "in:inbox newer_than:3d"
+            result = gmail_get("messages", {"q": query, "maxResults": 50}, token=token)
+            messages = result.get("messages", [])
 
-    if not messages:
-        print(f"[{datetime.now().strftime('%H:%M')}] No emails in last 3 days")
-        state["last_check_ts"] = int(datetime.now().timestamp())
-        save_state(state)
-        return
+            if not messages:
+                print(f"[{datetime.now().strftime('%H:%M')}] No emails in last 3 days")
+                state["last_check_ts"] = int(datetime.now().timestamp())
+                save_state(state)
+                return
 
-    # Fetch metadata for unseen messages only
-    batch_items = []
-    for msg_ref in messages:
-        msg_id = msg_ref["id"]
-        if msg_id in already_seen:
-            continue
+            batch_items = []
+            for msg_ref in messages:
+                msg_id = msg_ref["id"]
+                if msg_id in already_seen:
+                    continue
 
-        try:
-            msg = get_message(msg_id, token)
-        except Exception as exc:
-            print(f"[{datetime.now().strftime('%H:%M')}] Failed to fetch {msg_id}: {exc}")
-            continue
+                try:
+                    msg = get_message(msg_id, token)
+                except Exception as exc:
+                    print(f"[{datetime.now().strftime('%H:%M')}] Failed to fetch {msg_id}: {exc}")
+                    continue
 
-        msg_from    = extract_header(msg, "From")
-        msg_to      = extract_header(msg, "To")
-        msg_subject = extract_header(msg, "Subject")
-        msg_thread  = msg.get("threadId", "")
-        snippet     = msg.get("snippet", "")
-        labels      = msg.get("labelIds", [])
-        _, sender_email = parseaddr(msg_from)
+                msg_from = extract_header(msg, "From")
+                msg_to = extract_header(msg, "To")
+                msg_subject = extract_header(msg, "Subject")
+                msg_thread = msg.get("threadId", "")
+                snippet = msg.get("snippet", "")
+                labels = msg.get("labelIds", [])
+                _, sender_email = parseaddr(msg_from)
 
-        batch_items.append({
-            "id":           msg_id,
-            "from":         msg_from,
-            "sender_email": sender_email,
-            "to":           msg_to,
-            "subject":      msg_subject,
-            "snippet":      snippet[:500],
-            "labels":       labels,
-            "thread_id":    msg_thread,
-            "received_at":  extract_received_at(msg),
-        })
-
-        time.sleep(0.15)  # gentle rate limiting
-
-    if not batch_items:
-        print(f"[{datetime.now().strftime('%H:%M')}] No new emails (all already seen)")
-        state["last_check_ts"] = int(datetime.now().timestamp())
-        state["seen_msg_ids"]  = list(already_seen)[-500:]
-        save_state(state)
-        return
-
-    print(f"[{datetime.now().strftime('%H:%M')}] Classifying {len(batch_items)} new email(s) via Claude...")
-
-    # Classify via Claude CLI
-    classification_results = classify_with_claude(batch_items)
-    classification_map     = build_classification_map(classification_results, batch_items)
-
-    # Write to DB and collect metrics
-    conn = db_connect()
-    action_needed = []
-    alerts        = []
-    noise_items   = []
-    db_changed    = False
-
-    if conn:
-        for item in batch_items:
-            msg_id   = item["id"]
-            cl_result = classification_map.get(msg_id, {
-                "section":        "noise",
-                "classification": "unclassified",
-                "draft_response": None,
-                "context_notes":  None,
-            })
-
-            if write_card_to_db(conn, item, cl_result):
-                processed_seen.add(msg_id)
-                db_changed = True
-
-            section = cl_result.get("section", "noise")
-            if section == "action-needed":
-                action_needed.append((item, cl_result))
-            elif section == "alert":
-                alerts.append((item, cl_result))
-            else:
-                noise_items.append(item)
-
-        # Update adaptive filter suggestions for noise senders
-        update_filter_suggestions(conn, noise_items)
-        conn.commit()
-        conn.close()
-    else:
-        print(f"[{datetime.now().strftime('%H:%M')}] inbox.db not found — skipping DB writes")
-        # Still categorize for logging/notifications
-        for item in batch_items:
-            msg_id    = item["id"]
-            cl_result = classification_map.get(msg_id, {"section": "noise"})
-            section   = cl_result.get("section", "noise")
-            if section == "action-needed":
-                action_needed.append((item, cl_result))
-            elif section == "alert":
-                alerts.append((item, cl_result))
-            else:
-                noise_items.append(item)
-            processed_seen.add(msg_id)
-
-    # Notifications for action-needed emails
-    for item, cl_result in action_needed:
-        _, display_name = parseaddr(item["from"])
-        notify(
-            title=f"eng-buddy: Action needed",
-            message=f"From: {display_name or item['from']}\n{item['subject'][:80]}",
-        )
-
-    # Notifications for alerts (single batch notification if multiple)
-    if alerts:
-        if len(alerts) == 1:
-            item, cl_result = alerts[0]
-            _, display_name = parseaddr(item["from"])
-            notify(
-                title="eng-buddy: Alert",
-                message=f"From: {display_name or item['from']}\n{item['subject'][:80]}",
-            )
-        else:
-            notify(
-                title="eng-buddy: Alerts",
-                message=f"{len(alerts)} alert email(s) in your inbox",
-            )
-
-    # Write to daily log
-    total = len(batch_items)
-    check_time = datetime.now().strftime("%H:%M")
-    log_lines  = [f"\n### Email check {check_time} — {total} new ({len(action_needed)} action, {len(alerts)} alert, {len(noise_items)} noise)\n"]
-
-    for item, cl_result in action_needed:
-        classification = cl_result.get("classification", "needs-response")
-        log_lines.append(f"- ACTION [{classification}] **{item['from']}**: {item['subject']}\n")
-        if cl_result.get("context_notes"):
-            log_lines.append(f"  _{cl_result['context_notes']}_\n")
-
-    for item, cl_result in alerts:
-        classification = cl_result.get("classification", "alert")
-        log_lines.append(f"- ALERT [{classification}] **{item['from']}**: {item['subject']}\n")
-        if cl_result.get("context_notes"):
-            log_lines.append(f"  _{cl_result['context_notes']}_\n")
-
-    append_to_daily_log("".join(log_lines))
-
-    # Console summary
-    print(f"[{datetime.now().strftime('%H:%M')}] {total} email(s): "
-          f"{len(action_needed)} action-needed, {len(alerts)} alert, {len(noise_items)} noise")
-
-    # Update state
-    state["last_check_ts"] = int(datetime.now().timestamp())
-    state["seen_msg_ids"]  = list((already_seen | processed_seen))[-500:]
-    save_state(state)
-
-    if db_changed:
-        invalidate_dashboard_cache("gmail")
-
-    # Response sweep: check if user replied to any pending Gmail cards
-    token_for_sweep = get_token()
-    sweep_count, sweep_ids = sweep_responded_cards(token_for_sweep)
-    if sweep_count:
-        print(f"[{datetime.now().strftime('%H:%M')}] Response sweep: resolved {sweep_count} card(s)")
-        invalidate_dashboard_cache("gmail")
-        # Trigger cross-channel resolution for each resolved card
-        for cid in sweep_ids:
-            try:
-                req = urllib.request.Request(
-                    f"http://127.0.0.1:7777/api/cards/{cid}/resolve-related",
-                    data=b"{}",
-                    headers={"Content-Type": "application/json"},
-                    method="POST",
+                batch_items.append(
+                    {
+                        "id": msg_id,
+                        "from": msg_from,
+                        "sender_email": sender_email,
+                        "to": msg_to,
+                        "subject": msg_subject,
+                        "snippet": snippet[:500],
+                        "labels": labels,
+                        "thread_id": msg_thread,
+                        "received_at": extract_received_at(msg),
+                    }
                 )
-                urllib.request.urlopen(req, timeout=10)
-            except Exception as exc:
-                print(f"[{datetime.now().strftime('%H:%M')}] Cross-channel resolve failed for card {cid}: {exc}")
+
+                time.sleep(0.15)
+
+            if not batch_items:
+                print(f"[{datetime.now().strftime('%H:%M')}] No new emails (all already seen)")
+                state["last_check_ts"] = int(datetime.now().timestamp())
+                state["seen_msg_ids"] = list(already_seen)[-500:]
+                save_state(state)
+                return
+
+            print(f"[{datetime.now().strftime('%H:%M')}] Heuristically classifying {len(batch_items)} new email(s)...")
+
+            classification_results = classify_batch(batch_items)
+            classification_map = build_classification_map(classification_results, batch_items)
+
+            conn = db_connect()
+            action_needed = []
+            alerts = []
+            noise_items = []
+            db_changed = False
+
+            if conn:
+                for item in batch_items:
+                    msg_id = item["id"]
+                    cl_result = classification_map.get(
+                        msg_id,
+                        {
+                            "section": "noise",
+                            "classification": "unclassified",
+                            "draft_response": None,
+                            "context_notes": None,
+                        },
+                    )
+
+                    if write_card_to_db(conn, item, cl_result):
+                        processed_seen.add(msg_id)
+                        db_changed = True
+
+                    section = cl_result.get("section", "noise")
+                    if section == "action-needed":
+                        action_needed.append((item, cl_result))
+                    elif section == "alert":
+                        alerts.append((item, cl_result))
+                    else:
+                        noise_items.append(item)
+
+                update_filter_suggestions(conn, noise_items)
+                conn.commit()
+                conn.close()
+            else:
+                print(f"[{datetime.now().strftime('%H:%M')}] inbox.db not found — skipping DB writes")
+                for item in batch_items:
+                    msg_id = item["id"]
+                    cl_result = classification_map.get(msg_id, {"section": "noise"})
+                    section = cl_result.get("section", "noise")
+                    if section == "action-needed":
+                        action_needed.append((item, cl_result))
+                    elif section == "alert":
+                        alerts.append((item, cl_result))
+                    else:
+                        noise_items.append(item)
+                    processed_seen.add(msg_id)
+
+            for item, _cl_result in action_needed:
+                _, display_name = parseaddr(item["from"])
+                notify(
+                    title="eng-buddy: Action needed",
+                    message=f"From: {display_name or item['from']}\n{item['subject'][:80]}",
+                )
+
+            if alerts:
+                if len(alerts) == 1:
+                    item, _cl_result = alerts[0]
+                    _, display_name = parseaddr(item["from"])
+                    notify(
+                        title="eng-buddy: Alert",
+                        message=f"From: {display_name or item['from']}\n{item['subject'][:80]}",
+                    )
+                else:
+                    notify(
+                        title="eng-buddy: Alerts",
+                        message=f"{len(alerts)} alert email(s) in your inbox",
+                    )
+
+            total = len(batch_items)
+            check_time = datetime.now().strftime("%H:%M")
+            log_lines = [
+                f"\n### Email check {check_time} — {total} new ({len(action_needed)} action, {len(alerts)} alert, {len(noise_items)} noise)\n"
+            ]
+
+            for item, cl_result in action_needed:
+                classification = cl_result.get("classification", "needs-response")
+                log_lines.append(f"- ACTION [{classification}] **{item['from']}**: {item['subject']}\n")
+                if cl_result.get("context_notes"):
+                    log_lines.append(f"  _{cl_result['context_notes']}_\n")
+
+            for item, cl_result in alerts:
+                classification = cl_result.get("classification", "alert")
+                log_lines.append(f"- ALERT [{classification}] **{item['from']}**: {item['subject']}\n")
+                if cl_result.get("context_notes"):
+                    log_lines.append(f"  _{cl_result['context_notes']}_\n")
+
+            append_to_daily_log("".join(log_lines))
+
+            print(
+                f"[{datetime.now().strftime('%H:%M')}] {total} email(s): "
+                f"{len(action_needed)} action-needed, {len(alerts)} alert, {len(noise_items)} noise"
+            )
+
+            state["last_check_ts"] = int(datetime.now().timestamp())
+            state["seen_msg_ids"] = list((already_seen | processed_seen))[-500:]
+            save_state(state)
+
+            if db_changed:
+                invalidate_dashboard_cache("gmail")
+
+            token_for_sweep = get_token()
+            sweep_count, sweep_ids = sweep_responded_cards(token_for_sweep)
+            if sweep_count:
+                print(f"[{datetime.now().strftime('%H:%M')}] Response sweep: resolved {sweep_count} card(s)")
+                invalidate_dashboard_cache("gmail")
+                for cid in sweep_ids:
+                    try:
+                        req = urllib.request.Request(
+                            f"http://127.0.0.1:7777/api/cards/{cid}/resolve-related",
+                            data=b"{}",
+                            headers={"Content-Type": "application/json"},
+                            method="POST",
+                        )
+                        urllib.request.urlopen(req, timeout=10)
+                    except Exception as exc:
+                        print(f"[{datetime.now().strftime('%H:%M')}] Cross-channel resolve failed for card {cid}: {exc}")
+    except RuntimeError as exc:
+        print(f"[{datetime.now().strftime('%H:%M')}] {exc}")
 
 
 if __name__ == "__main__":

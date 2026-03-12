@@ -75,12 +75,12 @@ The dashboard auto-creates a Python venv and installs dependencies on first run.
 │   ├── requirements.txt             # fastapi, uvicorn, ptyprocess
 │   └── start.sh                     # One-command launcher (LaunchAgent + health check)
 ├── bin/                             # Background pollers + engines
-│   ├── gmail-poller.py              # OAuth2 email scanning → cards with draft replies
-│   ├── slack-poller.py              # DMs, @mentions, thread signals → cards with drafts
-│   ├── jira-poller.py               # Sprint issues via Atlassian MCP → cards
-│   ├── calendar-poller.py           # Weekly events via Calendar MCP → cards with prep
-│   ├── freshservice-poller.py       # Assigned tickets → cards
-│   ├── freshservice-enrichment.py   # Ticket mutation + workflow automation
+│   ├── gmail-poller.py              # OAuth2 email scanning → cards (collection-only)
+│   ├── slack-poller.py              # DMs, @mentions, thread signals → cards (collection-only)
+│   ├── jira-poller.py               # Jira REST sprint sync → cards
+│   ├── calendar-poller.py           # Google Calendar API weekly sync → cards
+│   ├── freshservice-poller.py       # Freshservice REST ticket sync → cards
+│   ├── freshservice-enrichment.py   # Collection-only shim for legacy LaunchAgent
 │   ├── brain.py                     # Learning engine: context builder + response parser
 │   ├── planner/                     # AI plan generation
 │   │   ├── planner.py               # Playbook match → LLM decomposition → Plan

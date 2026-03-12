@@ -20,4 +20,6 @@ Managed by `launchd` and served at http://127.0.0.1:7777
 | Slack | 10 min | slack-poller.log |
 | Jira | 5 min | jira-poller.log |
 
+All pollers are collection-only by default. They should sync raw data into `inbox.db` and avoid background Claude usage.
+
 Check all: `launchctl list | grep engbuddy`
