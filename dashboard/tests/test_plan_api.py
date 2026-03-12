@@ -2,6 +2,7 @@
 
 import json
 import sqlite3
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -103,6 +104,39 @@ def _seed_plan(plans_dir: Path, db_path: Path, card_id: int = 1) -> dict:
     conn.commit()
     conn.close()
     return plan
+
+
+def _seed_card(db_path: Path, card_id: int = 1) -> None:
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS cards (
+            id INTEGER PRIMARY KEY,
+            source TEXT,
+            summary TEXT,
+            context_notes TEXT,
+            proposed_actions TEXT,
+            draft_response TEXT,
+            analysis_metadata TEXT
+        )
+    """)
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO cards
+            (id, source, summary, context_notes, proposed_actions, draft_response, analysis_metadata)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            card_id,
+            "gmail",
+            "RE: Budget approval",
+            "From the CFO, due Friday",
+            json.dumps([{"type": "send-email", "draft": "Thanks, I'll review today."}]),
+            "Thanks, I'll review today.",
+            json.dumps({"category": "workflow"}),
+        ),
+    )
+    conn.commit()
+    conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -211,8 +245,40 @@ async def test_regenerate(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "DB_PATH", db_path)
 
     _seed_plan(plans_dir, db_path, card_id=1)
+    _seed_card(db_path, card_id=1)
     plan_file = plans_dir / "1.json"
     assert plan_file.exists()
+    claude_payload = {
+        "playbook_id": "on-demand/gmail",
+        "confidence": 0.7,
+        "phases": [
+            {
+                "name": "Review",
+                "steps": [
+                    {
+                        "summary": "Update the draft",
+                        "detail": "Reflect the user's feedback.",
+                        "action_type": "manual",
+                        "tool": "manual",
+                        "params": {},
+                        "param_sources": {},
+                        "draft_content": "Revised draft",
+                        "risk": "low",
+                    }
+                ],
+            }
+        ],
+    }
+    monkeypatch.setattr(
+        server,
+        "_run_claude_print",
+        lambda prompt, timeout=60: subprocess.CompletedProcess(
+            args=["claude"],
+            returncode=0,
+            stdout=json.dumps(claude_payload),
+            stderr="",
+        ),
+    )
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         r = await client.post(
@@ -222,6 +288,57 @@ async def test_regenerate(tmp_path, monkeypatch):
 
     assert r.status_code == 200
     body = r.json()
-    assert body["status"] == "queued"
+    assert body["status"] == "generated"
     assert body["feedback"] == "Wrong tools"
-    assert not plan_file.exists()
+    assert plan_file.exists()
+    assert body["plan"]["card_id"] == 1
+
+
+@pytest.mark.asyncio
+async def test_generate_plan_on_demand(tmp_path, monkeypatch):
+    plans_dir = tmp_path / "plans"
+    db_path = tmp_path / "inbox.db"
+    monkeypatch.setattr(server, "PLANS_DIR", str(plans_dir))
+    monkeypatch.setattr(server, "DB_PATH", db_path)
+    _seed_card(db_path, card_id=7)
+
+    claude_payload = {
+        "playbook_id": "on-demand/gmail",
+        "confidence": 0.8,
+        "phases": [
+            {
+                "name": "Review",
+                "steps": [
+                    {
+                        "summary": "Review the email and confirm the ask",
+                        "detail": "Check due date and recipient.",
+                        "action_type": "manual",
+                        "tool": "manual",
+                        "params": {},
+                        "param_sources": {},
+                        "draft_content": None,
+                        "risk": "low",
+                    }
+                ],
+            }
+        ],
+    }
+    monkeypatch.setattr(
+        server,
+        "_run_claude_print",
+        lambda prompt, timeout=60: subprocess.CompletedProcess(
+            args=["claude"],
+            returncode=0,
+            stdout=json.dumps(claude_payload),
+            stderr="",
+        ),
+    )
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r = await client.post("/api/cards/7/plan/generate", json={})
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["generated"] is True
+    assert body["plan"]["card_id"] == 7
+    assert (plans_dir / "7.json").exists()

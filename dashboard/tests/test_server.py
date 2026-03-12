@@ -19,6 +19,57 @@ async def test_health():
     assert r.json()["status"] == "ok"
 
 
+def test_run_claude_print_falls_back_to_codex_on_rate_limit(monkeypatch, tmp_path):
+    monkeypatch.setattr(server, "CODEX_FALLBACK_ENABLED", True)
+
+    def fake_run(args, **kwargs):
+        if args[0] == "claude":
+            return subprocess.CompletedProcess(
+                args=args,
+                returncode=1,
+                stdout="",
+                stderr="429 rate limit exceeded",
+            )
+
+        output_index = args.index("-o") + 1
+        Path(args[output_index]).write_text("codex fallback reply", encoding="utf-8")
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=0,
+            stdout="",
+            stderr="",
+        )
+
+    monkeypatch.setattr(server.subprocess, "run", fake_run)
+
+    result = server._run_claude_print("hello", timeout=5)
+
+    assert result.returncode == 0
+    assert result.stdout == "codex fallback reply"
+    assert "Claude fallback triggered" in result.stderr
+
+
+def test_run_claude_print_keeps_non_fallbackable_claude_error(monkeypatch):
+    monkeypatch.setattr(server, "CODEX_FALLBACK_ENABLED", True)
+
+    def fake_run(args, **kwargs):
+        if args[0] == "claude":
+            return subprocess.CompletedProcess(
+                args=args,
+                returncode=1,
+                stdout="",
+                stderr="invalid prompt format",
+            )
+        raise AssertionError("codex should not be called")
+
+    monkeypatch.setattr(server.subprocess, "run", fake_run)
+
+    result = server._run_claude_print("hello", timeout=5)
+
+    assert result.returncode == 1
+    assert result.stderr == "invalid prompt format"
+
+
 @pytest.mark.asyncio
 async def test_restart_uses_launchd_managed_start_script(monkeypatch):
     captured = {}

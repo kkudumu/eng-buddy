@@ -3,6 +3,7 @@ import {
   approveRemaining,
   executePlan,
   fetchPlan,
+  generatePlan,
   regeneratePlan,
   updateStep,
 } from '../api/client';
@@ -21,6 +22,14 @@ export function useUpdateStep(cardId: number) {
   return useMutation({
     mutationFn: (args: { stepIndex: number; status?: string; draft_content?: string; feedback?: string }) =>
       updateStep(cardId, args.stepIndex, args),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['plan', cardId] }),
+  });
+}
+
+export function useGeneratePlan(cardId: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (args?: { force?: boolean }) => generatePlan(cardId, args?.force ?? false),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['plan', cardId] }),
   });
 }

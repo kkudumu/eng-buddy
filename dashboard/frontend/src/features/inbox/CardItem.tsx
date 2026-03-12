@@ -3,6 +3,8 @@ import { Badge } from '../../components/Badge'
 import { Button } from '../../components/Button'
 import { useUIStore } from '../../stores/ui'
 import { useCardDecision } from '../../hooks/useCardDecision'
+import { useGeneratePlan } from '../../hooks/usePlan'
+import { useToastStore } from '../../stores/toast'
 import { PlanView } from '../plan/PlanView'
 import { ActionTray } from './ActionTray'
 import { GmailActions } from './GmailActions'
@@ -32,12 +34,30 @@ export function CardItem({ card, style }: CardItemProps) {
   const expandedActions = useUIStore((s) => s.expandedActions)
   const toggleExpandedActions = useUIStore((s) => s.toggleExpandedActions)
   const decision = useCardDecision()
+  const generatePlan = useGeneratePlan(card.id)
+  const addToast = useToastStore((s) => s.addToast)
 
   const isPlanExpanded = expandedPlanCards.has(card.id)
   const isActionsExpanded = expandedActions.has(card.id)
 
   const handleApprove = () => {
     decision.mutate({ cardId: card.id, action: 'approve', decision: 'approved', followUp: { endpoint: 'status', body: { status: 'approved' } } })
+  }
+
+  const handlePlanClick = () => {
+    if (isPlanExpanded) {
+      togglePlanExpanded(card.id)
+      return
+    }
+
+    generatePlan.mutate(undefined, {
+      onSuccess: () => {
+        togglePlanExpanded(card.id)
+      },
+      onError: () => {
+        addToast(`Failed to generate plan for card #${card.id}`, 'error')
+      },
+    })
   }
 
   return (
@@ -55,9 +75,10 @@ export function CardItem({ card, style }: CardItemProps) {
       )}
       <div className={styles.actions}>
         <Button
-          label={isPlanExpanded ? 'Hide Plan' : 'View Plan'}
-          onClick={() => togglePlanExpanded(card.id)}
+          label={isPlanExpanded ? 'Hide Plan' : (generatePlan.isPending ? 'Generating...' : 'Generate Plan')}
+          onClick={handlePlanClick}
           variant="ghost"
+          disabled={generatePlan.isPending}
         />
         <Button
           label={isActionsExpanded ? 'Hide Actions' : 'Actions'}

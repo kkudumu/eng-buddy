@@ -1,7 +1,19 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import { CardItem } from '../CardItem'
 import type { Card } from '../../../api/types'
+
+vi.mock('../../../hooks/usePlan', () => ({
+  useGeneratePlan: () => ({
+    isPending: false,
+    mutate: vi.fn(),
+  }),
+}))
+
+vi.mock('../../../stores/toast', () => ({
+  useToastStore: (selector: (state: { addToast: (...args: unknown[]) => void }) => unknown) =>
+    selector({ addToast: vi.fn() }),
+}))
 
 const mockCard: Card = {
   id: 1,
@@ -39,6 +51,11 @@ describe('CardItem', () => {
   it('shows draft when present', () => {
     render(<CardItem card={mockCard} />)
     expect(screen.getByText(/I will review and approve/)).toBeInTheDocument()
+  })
+
+  it('renders generate plan control', () => {
+    render(<CardItem card={mockCard} />)
+    expect(screen.getByRole('button', { name: 'Generate Plan' })).toBeInTheDocument()
   })
 
   it('applies source-specific glow class', () => {

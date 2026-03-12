@@ -94,6 +94,11 @@ export interface PlanResponse {
   plan: Plan;
 }
 
+export interface GeneratePlanResponse {
+  plan: Plan;
+  generated: boolean;
+}
+
 export interface StepUpdateResponse {
   step: PlanStep;
 }
@@ -110,8 +115,9 @@ export interface ExecuteResponse {
 }
 
 export interface RegenerateResponse {
-  status: 'queued';
+  status: 'generated';
   feedback: string;
+  plan: Plan;
 }
 
 export interface SettingsResponse {

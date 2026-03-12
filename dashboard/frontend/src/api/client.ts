@@ -2,6 +2,7 @@ import type {
   CardsResponse,
   CardSource,
   PlanResponse,
+  GeneratePlanResponse,
   StepUpdateResponse,
   ApproveRemainingResponse,
   ExecuteResponse,
@@ -49,6 +50,14 @@ export async function fetchHealth(): Promise<{ status: string }> {
 
 export async function fetchPlan(cardId: number): Promise<PlanResponse> {
   return request<PlanResponse>(`/api/cards/${cardId}/plan`);
+}
+
+export async function generatePlan(cardId: number, force = false): Promise<GeneratePlanResponse> {
+  return request<GeneratePlanResponse>(`/api/cards/${cardId}/plan/generate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ force }),
+  });
 }
 
 export async function updateStep(

@@ -45,9 +45,15 @@ TERMINAL_APP = DEFAULT_TERMINAL_APP
 JIRA_USER = os.environ.get("ENG_BUDDY_JIRA_USER", "kioja.kudumu@klaviyo.com")
 JIRA_BOARD_NAME = os.environ.get("ENG_BUDDY_JIRA_BOARD_NAME", "Systems")
 JIRA_PROJECT_KEY = os.environ.get("ENG_BUDDY_JIRA_PROJECT_KEY", "ITWORK2")
+CODEX_FALLBACK_ENABLED = os.environ.get(
+    "ENG_BUDDY_ENABLE_CODEX_FALLBACK", "1"
+).strip().lower() in {"1", "true", "yes", "on"}
 SUGGESTION_SOURCE = "suggestions"
 SUGGESTION_REFRESH_INTERVAL_SECONDS = 1800
 SUGGESTION_MAX_ITEMS = 12
+BACKGROUND_SUGGESTIONS_ENABLED = os.environ.get(
+    "ENG_BUDDY_ENABLE_BACKGROUND_SUGGESTIONS", ""
+).strip().lower() in {"1", "true", "yes", "on"}
 SUGGESTION_CATEGORY_ORDER = ("automation", "workflow", "time-saver", "gap")
 SUGGESTION_CATEGORY_LABELS = {
     "automation": "Automation",
@@ -127,7 +133,8 @@ POLLER_DEFINITIONS = (
 async def lifespan(app: FastAPI):
     STATIC_DIR.mkdir(exist_ok=True)
     migrate()
-    _start_suggestion_refresh_worker()
+    if BACKGROUND_SUGGESTIONS_ENABLED:
+        _start_suggestion_refresh_worker()
     yield
     await _browser_client.close()
 
@@ -235,13 +242,141 @@ def _claude_env():
     return env
 
 
+def _codex_env():
+    return _claude_env()
+
+
+def _should_use_codex_fallback(stdout: str = "", stderr: str = "", returncode: int = 1) -> bool:
+    if returncode == 0 or not CODEX_FALLBACK_ENABLED:
+        return False
+
+    message = f"{stderr or ''}\n{stdout or ''}".lower()
+    fallback_markers = (
+        "rate limit",
+        "rate-limit",
+        "429",
+        "too many requests",
+        "overloaded",
+        "service unavailable",
+        "temporarily unavailable",
+        "network error",
+        "connection reset",
+        "connection refused",
+        "timed out",
+        "timeout",
+        "econn",
+        "enotfound",
+        "command not found",
+        "unable to connect",
+        "failed to fetch",
+    )
+    return not message.strip() or any(marker in message for marker in fallback_markers)
+
+
+def _run_codex_exec(prompt: str, timeout: int = 60) -> subprocess.CompletedProcess:
+    output_path = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+            output_path = f.name
+
+        try:
+            result = subprocess.run(
+                [
+                    "codex",
+                    "exec",
+                    "--dangerously-bypass-approvals-and-sandbox",
+                    "--skip-git-repo-check",
+                    "--ephemeral",
+                    "--color",
+                    "never",
+                    "-C",
+                    str(ENG_BUDDY_DIR),
+                    "-o",
+                    output_path,
+                    "-",
+                ],
+                input=prompt,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                env=_codex_env(),
+            )
+        except subprocess.TimeoutExpired as exc:
+            stdout = exc.stdout if isinstance(exc.stdout, str) else ""
+            stderr = exc.stderr if isinstance(exc.stderr, str) else ""
+            return subprocess.CompletedProcess(
+                args=["codex", "exec"],
+                returncode=124,
+                stdout=stdout,
+                stderr=(stderr + "\nCodex timed out").strip(),
+            )
+
+        output_text = ""
+        if output_path and Path(output_path).exists():
+            try:
+                output_text = Path(output_path).read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                output_text = ""
+
+        return subprocess.CompletedProcess(
+            args=result.args,
+            returncode=result.returncode,
+            stdout=output_text or result.stdout,
+            stderr=result.stderr,
+        )
+    finally:
+        if output_path:
+            try:
+                Path(output_path).unlink()
+            except OSError:
+                pass
+
+
 def _run_claude_print(prompt: str, timeout: int = 60) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        ["claude", "--dangerously-skip-permissions", "--print", prompt],
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        env=_claude_env(),
+    try:
+        result = subprocess.run(
+            ["claude", "--dangerously-skip-permissions", "--print", prompt],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=_claude_env(),
+        )
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout if isinstance(exc.stdout, str) else ""
+        stderr = exc.stderr if isinstance(exc.stderr, str) else ""
+        result = subprocess.CompletedProcess(
+            args=["claude", "--dangerously-skip-permissions", "--print"],
+            returncode=124,
+            stdout=stdout,
+            stderr=(stderr + "\nClaude timed out").strip(),
+        )
+
+    if not _should_use_codex_fallback(result.stdout, result.stderr, result.returncode):
+        return result
+
+    codex_result = _run_codex_exec(prompt, timeout=timeout)
+    if codex_result.returncode == 0:
+        fallback_note = (result.stderr or result.stdout or "Claude unavailable").strip()
+        return subprocess.CompletedProcess(
+            args=codex_result.args,
+            returncode=0,
+            stdout=codex_result.stdout,
+            stderr=f"Claude fallback triggered: {fallback_note[:500]}",
+        )
+
+    combined_error = "\n".join(
+        part.strip()
+        for part in (
+            result.stderr or result.stdout or "Claude failed",
+            codex_result.stderr or codex_result.stdout or "Codex fallback failed",
+        )
+        if part and part.strip()
+    )
+    return subprocess.CompletedProcess(
+        args=codex_result.args,
+        returncode=codex_result.returncode or result.returncode,
+        stdout=codex_result.stdout or result.stdout,
+        stderr=combined_error,
     )
 
 
@@ -2257,6 +2392,268 @@ def _get_plan_store():
     return PlanStore(PLANS_DIR, str(DB_PATH))
 
 
+def _normalize_plan_risk(raw_value: str) -> str:
+    risk = str(raw_value or "").strip().lower()
+    if risk in {"low", "medium", "high"}:
+        return risk
+    return "medium"
+
+
+def _normalize_plan_action_type(raw_value: str) -> str:
+    action_type = str(raw_value or "").strip().lower()
+    if action_type in {"mcp", "manual", "browser"}:
+        return action_type
+    return "manual"
+
+
+def _fallback_plan_steps(card: dict):
+    actions = _card_actions(card)
+    source = str(card.get("source") or "unknown").strip() or "unknown"
+    summary = str(card.get("summary") or "").strip()
+    context_notes = str(card.get("context_notes") or "").strip()
+    draft_response = str(card.get("draft_response") or "").strip()
+
+    steps = [
+        {
+            "summary": "Review the card context and confirm the intended outcome",
+            "detail": context_notes or summary or f"Review the {source} card before acting.",
+            "action_type": "manual",
+            "tool": "manual",
+            "params": {},
+            "param_sources": {},
+            "draft_content": None,
+            "risk": "low",
+        }
+    ]
+
+    if draft_response:
+        steps.append(
+            {
+                "summary": "Review and edit the prepared draft before sending",
+                "detail": "Use the existing draft as a starting point and adjust tone or details as needed.",
+                "action_type": "manual",
+                "tool": "manual",
+                "params": {},
+                "param_sources": {},
+                "draft_content": draft_response,
+                "risk": "low",
+            }
+        )
+
+    for action in actions[:3]:
+        if not isinstance(action, dict):
+            continue
+        action_type = str(action.get("type") or "next-step").strip() or "next-step"
+        draft = str(action.get("draft") or "").strip()
+        params = {k: v for k, v in action.items() if k not in {"type", "draft"}}
+        steps.append(
+            {
+                "summary": draft or f"Handle {action_type.replace('-', ' ')}",
+                "detail": f"Use the {source} context to complete the {action_type} action.",
+                "action_type": "manual",
+                "tool": action_type,
+                "params": params,
+                "param_sources": {key: "card.proposed_actions" for key in params.keys()},
+                "draft_content": draft or None,
+                "risk": "medium" if params else "low",
+            }
+        )
+
+    steps.append(
+        {
+            "summary": "Approve and run the plan when the steps look right",
+            "detail": "After review, approve the relevant steps and execute them from the dashboard.",
+            "action_type": "manual",
+            "tool": "manual",
+            "params": {},
+            "param_sources": {},
+            "draft_content": None,
+            "risk": "low",
+        }
+    )
+    return steps[:6]
+
+
+def _build_fallback_plan(card_id: int, card: dict):
+    from store import Plan, PlanPhase, PlanStep
+
+    phases = [
+        PlanPhase(
+            name="Review",
+            steps=[
+                PlanStep(
+                    index=index,
+                    summary=step["summary"],
+                    detail=step["detail"],
+                    action_type=step["action_type"],
+                    tool=step["tool"],
+                    params=step["params"],
+                    param_sources=step["param_sources"],
+                    draft_content=step["draft_content"],
+                    risk=step["risk"],
+                    status="pending",
+                    output=None,
+                )
+                for index, step in enumerate(_fallback_plan_steps(card), start=1)
+            ],
+        )
+    ]
+
+    return Plan(
+        id=f"card-{card_id}-{int(time.time())}",
+        card_id=card_id,
+        source=str(card.get("source") or ""),
+        playbook_id=f"on-demand/{str(card.get('source') or 'card')}",
+        confidence=0.45,
+        status="pending",
+        created_at=datetime.now(timezone.utc).isoformat(),
+        executed_at=None,
+        phases=phases,
+    )
+
+
+def _normalize_generated_plan(card_id: int, card: dict, payload: dict):
+    from store import Plan, PlanPhase, PlanStep
+
+    if not isinstance(payload, dict):
+        return _build_fallback_plan(card_id, card)
+
+    raw_phases = payload.get("phases")
+    if not isinstance(raw_phases, list) or not raw_phases:
+        return _build_fallback_plan(card_id, card)
+
+    phases = []
+    next_index = 1
+
+    for phase_item in raw_phases[:4]:
+        if not isinstance(phase_item, dict):
+            continue
+        phase_name = str(phase_item.get("name") or "").strip() or f"Phase {len(phases) + 1}"
+        raw_steps = phase_item.get("steps")
+        if not isinstance(raw_steps, list):
+            continue
+
+        steps = []
+        for raw_step in raw_steps[:6]:
+            if not isinstance(raw_step, dict):
+                continue
+            action_type = _normalize_plan_action_type(raw_step.get("action_type"))
+            tool = str(raw_step.get("tool") or "").strip() or ("manual" if action_type == "manual" else "unknown")
+            params = raw_step.get("params") if isinstance(raw_step.get("params"), dict) else {}
+            param_sources = raw_step.get("param_sources") if isinstance(raw_step.get("param_sources"), dict) else {}
+            steps.append(
+                PlanStep(
+                    index=next_index,
+                    summary=str(raw_step.get("summary") or "").strip() or f"Step {next_index}",
+                    detail=str(raw_step.get("detail") or "").strip(),
+                    action_type=action_type,
+                    tool=tool,
+                    params=params,
+                    param_sources=param_sources,
+                    draft_content=str(raw_step.get("draft_content") or "").strip() or None,
+                    risk=_normalize_plan_risk(raw_step.get("risk")),
+                    status="pending",
+                    output=None,
+                )
+            )
+            next_index += 1
+
+        if steps:
+            phases.append(PlanPhase(name=phase_name, steps=steps))
+
+    if not phases:
+        return _build_fallback_plan(card_id, card)
+
+    confidence = payload.get("confidence")
+    try:
+        confidence_value = float(confidence)
+    except (TypeError, ValueError):
+        confidence_value = 0.6
+    confidence_value = max(0.0, min(confidence_value, 1.0))
+
+    playbook_id = str(payload.get("playbook_id") or "").strip() or f"on-demand/{str(card.get('source') or 'card')}"
+    return Plan(
+        id=f"card-{card_id}-{int(time.time())}",
+        card_id=card_id,
+        source=str(card.get("source") or ""),
+        playbook_id=playbook_id,
+        confidence=confidence_value,
+        status="pending",
+        created_at=datetime.now(timezone.utc).isoformat(),
+        executed_at=None,
+        phases=phases,
+    )
+
+
+def _build_plan_generation_prompt(card_id: int, card: dict, feedback: str = "") -> str:
+    source = str(card.get("source") or "unknown").strip() or "unknown"
+    summary = str(card.get("summary") or "").strip()
+    context_notes = str(card.get("context_notes") or "").strip()
+    draft_response = str(card.get("draft_response") or "").strip()
+    actions = json.dumps(_card_actions(card), indent=2)
+    metadata = json.dumps(_card_analysis_metadata(card), indent=2)
+
+    feedback_block = f"\nUser feedback for regeneration:\n{feedback}\n" if feedback else ""
+
+    return f"""You are eng-buddy generating a just-in-time execution plan for a single dashboard card.
+Only generate a plan because the user explicitly asked for it in the UI.
+Do not assume background automation, and do not include any steps that require Claude before plan execution.
+
+Card ID: {card_id}
+Source: {source}
+Summary: {summary}
+Context notes: {context_notes or "(none)"}
+Draft response: {draft_response or "(none)"}
+Proposed actions:
+{actions}
+
+Analysis metadata:
+{metadata}
+{feedback_block}
+
+Return ONLY valid JSON with this shape:
+{{
+  "playbook_id": "on-demand/{source}",
+  "confidence": 0.0,
+  "phases": [
+    {{
+      "name": "Review",
+      "steps": [
+        {{
+          "summary": "Short action title",
+          "detail": "One or two sentences with concrete guidance",
+          "action_type": "manual",
+          "tool": "manual",
+          "params": {{}},
+          "param_sources": {{}},
+          "draft_content": null,
+          "risk": "low"
+        }}
+      ]
+    }}
+  ]
+}}
+
+Rules:
+- Prefer 1 to 3 phases and at most 6 total steps.
+- If a step depends on a human judgment call, use action_type "manual" and tool "manual".
+- If a step clearly maps to an MCP or API operation later, use action_type "mcp" and set tool to a concise tool name.
+- Put any user-facing draft text in draft_content.
+- Keep params limited to values that are already known from the card.
+- Do not include status or output fields.
+"""
+
+
+def _generate_plan_for_card(card_id: int, card: dict, feedback: str = ""):
+    prompt = _build_plan_generation_prompt(card_id, card, feedback=feedback)
+    result = _run_claude_print(prompt, timeout=75)
+    if result.returncode != 0:
+        raise HTTPException(502, f"Plan generation failed: {result.stderr[:200]}")
+
+    parsed = _extract_balanced_json(result.stdout.strip(), "{")
+    return _normalize_generated_plan(card_id, card, parsed)
+
+
 @app.get("/api/cards/{card_id}/plan")
 async def get_card_plan(card_id: int):
     store = _get_plan_store()
@@ -2264,6 +2661,32 @@ async def get_card_plan(card_id: int):
     if not plan:
         raise HTTPException(404, "No plan for this card")
     return {"plan": plan.to_dict()}
+
+
+@app.post("/api/cards/{card_id}/plan/generate")
+async def generate_card_plan(card_id: int, body: dict = Body(default={})):
+    store = _get_plan_store()
+    force = bool(body.get("force", False))
+    feedback = str(body.get("feedback") or "").strip()
+
+    if not force:
+        existing = store.get(card_id)
+        if existing:
+            return {"plan": existing.to_dict(), "generated": False}
+
+    conn = get_db()
+    try:
+        row = conn.execute("SELECT * FROM cards WHERE id = ?", [card_id]).fetchone()
+        if not row:
+            raise HTTPException(404, "card not found")
+        card = dict(row)
+    finally:
+        conn.close()
+
+    plan = _generate_plan_for_card(card_id, card, feedback=feedback)
+    store.save(plan)
+    _stale_sources.add("plans")
+    return {"plan": plan.to_dict(), "generated": True}
 
 
 @app.patch("/api/cards/{card_id}/plan/steps/{step_index}")
@@ -2387,14 +2810,22 @@ async def plan_step_complete(card_id: int, step_index: int, body: dict = Body(..
 @app.post("/api/cards/{card_id}/plan/regenerate")
 async def regenerate_plan(card_id: int, body: dict = Body(...)):
     store = _get_plan_store()
-    feedback = body.get("feedback")
+    feedback = str(body.get("feedback") or "").strip()
+
+    conn = get_db()
+    try:
+        row = conn.execute("SELECT * FROM cards WHERE id = ?", [card_id]).fetchone()
+        if not row:
+            raise HTTPException(404, "card not found")
+        card = dict(row)
+    finally:
+        conn.close()
+
     store.delete(card_id)
-    # Store feedback so worker can pass it to CardPlanner.regenerate()
-    if feedback:
-        feedback_path = Path(PLANS_DIR) / f"{card_id}.feedback"
-        feedback_path.write_text(feedback)
+    plan = _generate_plan_for_card(card_id, card, feedback=feedback)
+    store.save(plan)
     _stale_sources.add("plans")
-    return {"status": "queued", "feedback": feedback}
+    return {"status": "generated", "feedback": feedback, "plan": plan.to_dict()}
 
 
 @app.post("/api/cards/approve-all")
@@ -4055,16 +4486,34 @@ async def execute_card(websocket: WebSocket, card_id: int):
         f"and wait for confirmation before sending."
     )
 
-    # Write prompt to temp file
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
-        f.write(prompt)
-        prompt_file = f.name
+    exec_env = _claude_env()
+    exec_env["ENG_BUDDY_AI_PROMPT"] = prompt
+    exec_env["ENG_BUDDY_WORKDIR"] = str(ENG_BUDDY_DIR)
+    exec_script = r'''
+AI_ERR_FILE="$(mktemp -t engbuddy-ai-err.XXXXXX)"
+cleanup() {
+  rm -f "$AI_ERR_FILE"
+}
+trap cleanup EXIT
 
-    # Spawn claude in PTY
+if claude --dangerously-skip-permissions --print "$ENG_BUDDY_AI_PROMPT" 2>"$AI_ERR_FILE"; then
+  exit 0
+fi
+
+if grep -Eiq 'rate limit|rate-limit|429|too many requests|overloaded|service unavailable|temporarily unavailable|network error|connection reset|connection refused|timed out|timeout|econn|enotfound|command not found|unable to connect|failed to fetch' "$AI_ERR_FILE"; then
+  echo "[eng-buddy] Claude unavailable; falling back to Codex." >&2
+  printf '%s' "$ENG_BUDDY_AI_PROMPT" | codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --ephemeral --color never -C "$ENG_BUDDY_WORKDIR" -
+  exit $?
+fi
+
+cat "$AI_ERR_FILE" >&2
+exit 1
+'''
+
     proc = ptyprocess.PtyProcess.spawn(
-        ["claude", "--dangerously-skip-permissions", "--print", prompt],
+        ["/bin/bash", "-lc", exec_script],
         dimensions=(50, 220),
-        env=_claude_env(),
+        env=exec_env,
     )
 
     # Mark card as running
@@ -4123,7 +4572,6 @@ async def execute_card(websocket: WebSocket, card_id: int):
     finally:
         thread.join(timeout=2)
         proc.close()
-        os.unlink(prompt_file)
 
         # Save execution result
         full_output = "".join(output_chunks)
@@ -4401,6 +4849,11 @@ def _launch_terminal_session(
         f.write("PROMPT=$(cat <<'ENGBUDDY_EOF'\n")
         f.write(context)
         f.write("\nENGBUDDY_EOF\n)\n")
+        f.write("AI_ERR_FILE=$(mktemp -t engbuddy-ai-err.XXXXXX)\n")
+        f.write("cleanup() {\n")
+        f.write("  rm -f \"$AI_ERR_FILE\"\n")
+        f.write("}\n")
+        f.write("trap cleanup EXIT\n")
         if chat_session_id is not None:
             transcript_dir = RUNTIME_DIR / "transcripts"
             transcript_dir.mkdir(parents=True, exist_ok=True)
@@ -4408,7 +4861,18 @@ def _launch_terminal_session(
                 f"session-{launcher_prefix.rstrip('-')}-{chat_session_id}-{int(datetime.now().timestamp())}.log"
             )
             f.write(f'TRANSCRIPT_FILE="{transcript_file}"\n')
-            f.write('script -q "$TRANSCRIPT_FILE" claude --dangerously-skip-permissions "$PROMPT"\n')
+            f.write("export PROMPT AI_ERR_FILE\n")
+            f.write('script -q "$TRANSCRIPT_FILE" /bin/bash -lc \'claude --dangerously-skip-permissions "$PROMPT" 2>"$AI_ERR_FILE"\'\n')
+            f.write("CLAUDE_EXIT=$?\n")
+            f.write("if [ \"$CLAUDE_EXIT\" -ne 0 ]; then\n")
+            f.write("  if grep -Eiq 'rate limit|rate-limit|429|too many requests|overloaded|service unavailable|temporarily unavailable|network error|connection reset|connection refused|timed out|timeout|econn|enotfound|command not found|unable to connect|failed to fetch' \"$AI_ERR_FILE\"; then\n")
+            f.write('    echo "[eng-buddy] Claude unavailable; falling back to Codex."\n')
+            f.write(f'    script -a -q "$TRANSCRIPT_FILE" codex --dangerously-bypass-approvals-and-sandbox -C "{ENG_BUDDY_DIR}" --skip-git-repo-check "$PROMPT"\n')
+            f.write("  else\n")
+            f.write("    cat \"$AI_ERR_FILE\" >&2\n")
+            f.write("    exit \"$CLAUDE_EXIT\"\n")
+            f.write("  fi\n")
+            f.write("fi\n")
             f.write("python3 - \"$TRANSCRIPT_FILE\" <<'ENGBUDDY_INGEST_PY'\n")
             f.write("import json, sys, urllib.request\n")
             f.write(f"session_id = {int(chat_session_id)}\n")
@@ -4422,7 +4886,17 @@ def _launch_terminal_session(
             f.write("    pass\n")
             f.write("ENGBUDDY_INGEST_PY\n")
         else:
-            f.write('claude --dangerously-skip-permissions "$PROMPT"\n')
+            f.write('claude --dangerously-skip-permissions "$PROMPT" 2>"$AI_ERR_FILE"\n')
+            f.write("CLAUDE_EXIT=$?\n")
+            f.write("if [ \"$CLAUDE_EXIT\" -ne 0 ]; then\n")
+            f.write("  if grep -Eiq 'rate limit|rate-limit|429|too many requests|overloaded|service unavailable|temporarily unavailable|network error|connection reset|connection refused|timed out|timeout|econn|enotfound|command not found|unable to connect|failed to fetch' \"$AI_ERR_FILE\"; then\n")
+            f.write('    echo "[eng-buddy] Claude unavailable; falling back to Codex."\n')
+            f.write(f'    codex --dangerously-bypass-approvals-and-sandbox -C "{ENG_BUDDY_DIR}" --skip-git-repo-check "$PROMPT"\n')
+            f.write("  else\n")
+            f.write("    cat \"$AI_ERR_FILE\" >&2\n")
+            f.write("    exit \"$CLAUDE_EXIT\"\n")
+            f.write("  fi\n")
+            f.write("fi\n")
         launcher = f.name
 
     os.chmod(launcher, 0o755)
