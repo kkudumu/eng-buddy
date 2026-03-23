@@ -29,7 +29,7 @@ ThemePicker and ModeToggle exist in the header but settings don't hydrate on app
 ## Part 2: Playbook Management
 
 ### A. Draft Review & Edit UI
-Enhance existing `PlaybooksView.tsx` with expandable draft detail view:
+Enhance existing `PlaybooksView.tsx` with exftmble draft detail view:
 - Expand a draft → step table (step name, MCP tool, risk level)
 - Inline edit: tweak step params, reorder steps, delete a step
 - No blank-canvas creation — drafts come from the playbook engine
@@ -42,14 +42,14 @@ Wire existing endpoints to UI with proper UX:
 
 ### C. Execution History
 - New endpoint: `GET /api/playbooks/{id}/history` — past runs with timestamps, step outcomes, pass/fail
-- Expandable run rows showing per-step results
+- Exftmble run rows showing per-step results
 - Status badges: success / failed / partial
 
 ### Files
 - `src/features/playbooks/PlaybooksView.tsx` — extend with tabbed layout (drafts/published/history)
-- `src/features/playbooks/DraftEditor.tsx` — new: expandable draft with step table + inline edit
+- `src/features/playbooks/DraftEditor.tsx` — new: exftmble draft with step table + inline edit
 - `src/features/playbooks/RunHistory.tsx` — new: execution history list
-- `src/features/playbooks/RunDetail.tsx` — new: expandable per-step run results
+- `src/features/playbooks/RunDetail.tsx` — new: exftmble per-step run results
 - `src/api/client.ts` — add playbook edit, history API functions
 - `src/api/types.ts` — add playbook edit/history types
 - `dashboard/server.py` — add `PATCH /api/playbooks/drafts/{id}`, `GET /api/playbooks/{id}/history`

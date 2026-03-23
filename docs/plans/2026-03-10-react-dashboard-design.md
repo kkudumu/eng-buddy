@@ -202,7 +202,7 @@ interface Step {
 - Draft content shown inline, `[edit]` toggles contenteditable
 - Execution starts for consecutive approved steps, pauses at first unapproved
 - Failed step pauses execution, shows error + output, allows retry or skip
-- Playwright steps show thumbnail screenshots, expandable to full view
+- Playwright steps show thumbnail screenshots, exftmble to full view
 
 ## Deferred
 

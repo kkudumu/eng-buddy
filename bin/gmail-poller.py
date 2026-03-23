@@ -156,23 +156,9 @@ def invalidate_dashboard_cache(source="gmail"):
 
 
 # ---------------------------------------------------------------------------
-# Output helpers
+# Output helpers (daily log writes REMOVED — data already flows to inbox.db;
+# daily log dumping was causing unnecessary bloat)
 # ---------------------------------------------------------------------------
-
-def get_daily_log_path():
-    return BASE_DIR / "daily" / f"{date.today().strftime('%Y-%m-%d')}.md"
-
-
-def append_to_daily_log(content):
-    log_path = get_daily_log_path()
-    if not log_path.exists():
-        return
-    existing = log_path.read_text()
-    if "## Email Updates" not in existing:
-        with open(log_path, "a") as f:
-            f.write("\n## Email Updates\n")
-    with open(log_path, "a") as f:
-        f.write(content)
 
 
 # ---------------------------------------------------------------------------
@@ -720,24 +706,6 @@ def main():
                     )
 
             total = len(batch_items)
-            check_time = datetime.now().strftime("%H:%M")
-            log_lines = [
-                f"\n### Email check {check_time} — {total} new ({len(action_needed)} action, {len(alerts)} alert, {len(noise_items)} noise)\n"
-            ]
-
-            for item, cl_result in action_needed:
-                classification = cl_result.get("classification", "needs-response")
-                log_lines.append(f"- ACTION [{classification}] **{item['from']}**: {item['subject']}\n")
-                if cl_result.get("context_notes"):
-                    log_lines.append(f"  _{cl_result['context_notes']}_\n")
-
-            for item, cl_result in alerts:
-                classification = cl_result.get("classification", "alert")
-                log_lines.append(f"- ALERT [{classification}] **{item['from']}**: {item['subject']}\n")
-                if cl_result.get("context_notes"):
-                    log_lines.append(f"  _{cl_result['context_notes']}_\n")
-
-            append_to_daily_log("".join(log_lines))
 
             print(
                 f"[{datetime.now().strftime('%H:%M')}] {total} email(s): "

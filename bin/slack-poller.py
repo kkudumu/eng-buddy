@@ -62,24 +62,9 @@ def invalidate_dashboard_cache(source="slack"):
 
 
 # ---------------------------------------------------------------------------
-# Daily log helpers
+# Daily log helpers (REMOVED — data already flows to inbox.db; daily log
+# dumping was causing 8000+ line bloat in daily files)
 # ---------------------------------------------------------------------------
-
-def get_daily_log_path():
-    today = date.today().strftime("%Y-%m-%d")
-    return BASE_DIR / "daily" / f"{today}.md"
-
-
-def append_to_daily_log(content):
-    log_path = get_daily_log_path()
-    if not log_path.exists():
-        return
-    existing = log_path.read_text()
-    if "## Slack Unreads" not in existing:
-        with open(log_path, "a") as f:
-            f.write("\n## Slack Unreads\n")
-    with open(log_path, "a") as f:
-        f.write(content)
 
 
 # ---------------------------------------------------------------------------
@@ -857,16 +842,7 @@ def main():
                 if item.get("section") == "needs-action" and not item.get("responded"):
                     needs_action_items.append(item)
 
-            check_time = now.strftime("%H:%M")
-            lines = [f"\n### Polled at {check_time} — {len(messages)} new\n"]
-            for item in messages:
-                responded_tag = " [responded]" if item.get("responded") else ""
-                lines.append(
-                    f"- **{item.get('channel', '?')}**{responded_tag} "
-                    f"**{item.get('sender', '?')}**: {item.get('text', '')[:200]}\n"
-                )
-            append_to_daily_log("".join(lines))
-            print(f"[{now.strftime('%H:%M')}] Logged {len(messages)} message(s) to daily log")
+            print(f"[{now.strftime('%H:%M')}] Ingested {len(messages)} message(s) to inbox.db")
 
             for item in needs_action_items:
                 preview = (item.get("text", ""))[:80]

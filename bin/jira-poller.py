@@ -19,6 +19,12 @@ from pathlib import Path
 
 from poller_runtime import credential, single_instance
 
+try:
+    import tasks_db
+    HAS_TASKS_DB = True
+except ImportError:
+    HAS_TASKS_DB = False
+
 BASE_DIR = Path.home() / ".claude" / "eng-buddy"
 STATE_FILE = BASE_DIR / "jira-ingestor-state.json"
 DB_PATH = BASE_DIR / "inbox.db"
@@ -198,6 +204,21 @@ def main():
                 conn.commit()
             finally:
                 conn.close()
+
+            # Upsert into tasks.db if available
+            if HAS_TASKS_DB:
+                for issue in issues:
+                    try:
+                        tasks_db.upsert_jira_task(
+                            jira_key=issue["key"],
+                            title=issue.get("summary", ""),
+                            jira_status=issue.get("status", ""),
+                            priority=issue.get("priority", "Medium"),
+                            metadata={"url": issue.get("url", ""), "labels": issue.get("labels", [])},
+                        )
+                    except Exception as exc:
+                        print(f"[{datetime.now()}] tasks_db upsert failed for {issue.get('key', '?')}: {exc}")
+                print(f"[{datetime.now()}] Synced {len(issues)} issues to tasks.db")
 
             set_last_checked(datetime.now(timezone.utc).isoformat())
             print(f"[{datetime.now()}] Processed {len(issues)} Jira issues.")

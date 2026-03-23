@@ -936,7 +936,7 @@ Expected: No new errors
 
 ```bash
 git add dashboard/frontend/src/features/playbooks/RunHistory.tsx dashboard/frontend/src/features/playbooks/RunHistory.module.css
-git commit -m "Add RunHistory component with expandable per-step execution details"
+git commit -m "Add RunHistory component with exftmble per-step execution details"
 ```
 
 ---
@@ -1168,7 +1168,7 @@ Expected: No new errors
 
 ```bash
 git add dashboard/frontend/src/features/playbooks/PlaybooksView.tsx dashboard/frontend/src/features/playbooks/PlaybooksView.module.css
-git commit -m "Rewrite PlaybooksView with tabs: drafts (expandable editor), published, and history"
+git commit -m "Rewrite PlaybooksView with tabs: drafts (exftmble editor), published, and history"
 ```
 
 ---

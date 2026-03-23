@@ -82,7 +82,7 @@ if [ -s "$CLAUDE_SYNC_FILE" ]; then
     echo ""
     echo "[Dashboard sync] Recent dashboard updates were written to eng-buddy state:"
     head -20 "$CLAUDE_SYNC_FILE"
-    echo "Please re-read ~/.claude/eng-buddy/tasks/active-tasks.md before responding and treat those updates as authoritative."
+    echo "Please run 'python3 ~/.claude/skills/eng-buddy/bin/brain.py --tasks --task-json' to reload task state from tasks.db and treat those updates as authoritative."
     echo ""
     : > "$CLAUDE_SYNC_FILE"
 fi
@@ -142,7 +142,7 @@ if [ "$SHOULD_HEARTBEAT" = true ]; then
     echo "$(date +%s)" > "$LAST_HEARTBEAT_FILE"
     echo ""
     echo "[HEARTBEAT — $(date '+%H:%M') check-in]: 30 minutes have passed. Briefly scan for anything time-sensitive:"
-    echo "- Read ~/.claude/eng-buddy/tasks/active-tasks.md — any deadlines or blockers that need attention?"
+    echo "- Run 'python3 ~/.claude/skills/eng-buddy/bin/brain.py --tasks' to check tasks.db for deadlines or blockers that need attention."
     echo "- Read ~/.claude/eng-buddy/dependencies/active-blockers.md — any aging blockers to escalate?"
     # Surface HEARTBEAT.md if it exists and has content
     if [ -f "$HEARTBEAT_MD" ]; then

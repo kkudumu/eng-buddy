@@ -8,6 +8,7 @@ import json
 import re
 import sqlite3
 import sys
+import tasks_db
 from datetime import date, datetime
 from pathlib import Path
 
@@ -813,7 +814,116 @@ def _cli():
     parser.add_argument("--playbook-promote", type=str, metavar="PLAYBOOK_ID",
         help="Promote a draft playbook to approved")
 
+    # --- Task Management Commands ---
+    parser.add_argument("--tasks", action="store_true",
+        help="List all non-completed tasks")
+    parser.add_argument("--tasks-all", action="store_true",
+        help="List ALL tasks including completed")
+    parser.add_argument("--task", type=int, metavar="N",
+        help="Show full detail for task N")
+    parser.add_argument("--task-add", action="store_true",
+        help="Create a new task (requires --title)")
+    parser.add_argument("--task-update", type=int, metavar="N",
+        help="Update task N (use with --status, --priority, --deferred-until)")
+    parser.add_argument("--task-search", type=str, metavar="KEYWORD",
+        help="Full-text search for tasks")
+    parser.add_argument("--task-json", action="store_true",
+        help="Output task results as JSON instead of table format")
+    parser.add_argument("--task-export", type=int, metavar="N",
+        help="Export task N as markdown context block")
+    parser.add_argument("--title", type=str, default="",
+        help="Title for --task-add")
+    parser.add_argument("--status", type=str, default="",
+        help="Status for --task-update")
+    parser.add_argument("--priority", type=str, default="",
+        help="Priority for --task-add or --task-update")
+    parser.add_argument("--jira-key", type=str, default="",
+        help="Jira key for --task-add")
+    parser.add_argument("--deferred-until", type=str, default="",
+        help="Deferred date for --task-update")
+
     args = parser.parse_args()
+
+    # --- Task Management Handlers ---
+    if args.tasks or args.tasks_all:
+        rows = tasks_db.list_tasks(status=None)
+        if not args.tasks_all:
+            rows = [r for r in rows if r.get("status") != "completed"]
+        if args.task_json:
+            print(json.dumps(rows, indent=2, default=str))
+        else:
+            print(f"{'ID':>4}  {'Status':<14}{'Priority':<10}{'Jira':<16}Title")
+            print(f"{'--':>4}  {'------':<14}{'--------':<10}{'----':<16}-----")
+            for r in rows:
+                print(f"{r.get('id', ''):>4}  {r.get('status', ''):<14}{r.get('priority', ''):<10}{(r.get('jira_key') or ''):<16}{r.get('title', '')}")
+        return 0
+
+    if args.task is not None:
+        t = tasks_db.get_task(args.task)
+        if not t:
+            print(f"Error: task #{args.task} not found", file=sys.stderr)
+            return 1
+        if args.task_json:
+            print(json.dumps(t, indent=2, default=str))
+        else:
+            for k, v in t.items():
+                print(f"{k:>20}: {v}")
+        return 0
+
+    if args.task_add:
+        if not args.title:
+            print("Error: --title is required for --task-add", file=sys.stderr)
+            return 1
+        task_id = tasks_db.add_task(
+            title=args.title,
+            description=args.description or None,
+            priority=args.priority or "medium",
+            jira_key=args.jira_key or None,
+        )
+        if args.task_json:
+            print(json.dumps({"id": task_id, "title": args.title}))
+        else:
+            print(f"Created task #{task_id}: {args.title}")
+        return 0
+
+    if args.task_update is not None:
+        kwargs = {}
+        if args.status:
+            kwargs["status"] = args.status
+        if args.priority:
+            kwargs["priority"] = args.priority
+        if args.deferred_until:
+            kwargs["deferred_until"] = args.deferred_until
+        ok = tasks_db.update_task(args.task_update, **kwargs)
+        if ok:
+            print(f"Updated task #{args.task_update}")
+        else:
+            print(f"Error: task #{args.task_update} not found or update failed", file=sys.stderr)
+            return 1
+        return 0
+
+    if args.task_search:
+        rows = tasks_db.search_tasks(args.task_search)
+        if args.task_json:
+            print(json.dumps(rows, indent=2, default=str))
+        else:
+            print(f"{'ID':>4}  {'Status':<14}{'Priority':<10}{'Jira':<16}Title")
+            print(f"{'--':>4}  {'------':<14}{'--------':<10}{'----':<16}-----")
+            for r in rows:
+                print(f"{r.get('id', ''):>4}  {r.get('status', ''):<14}{r.get('priority', ''):<10}{(r.get('jira_key') or ''):<16}{r.get('title', '')}")
+        return 0
+
+    if args.task_export is not None:
+        t = tasks_db.get_task(args.task_export)
+        if not t:
+            print(f"Error: task #{args.task_export} not found", file=sys.stderr)
+            return 1
+        print(f"## Task #{t['id']}: {t.get('title', '')}")
+        print(f"**Jira**: {t.get('jira_key') or 'None'}")
+        print(f"**Status**: {t.get('status', '')}")
+        print(f"**Priority**: {t.get('priority', '')}")
+        print(f"**Description**: {t.get('description') or ''}")
+        return 0
 
     if args.register_learning_category:
         result = register_learning_category(
